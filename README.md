@@ -95,7 +95,7 @@ En escenarios favorables de simulación estocástica, el sistema puede observar 
 
 > Todas las mejoras son **opt-in** para mantener compatibilidad total.
 
-- **MEJORA GOD (Visión):** YOLO custom vía `--yolo-model`, tracking EKF, fallback híbrido YOLO + clásico + optical-flow (Farneback), detección de fase (`high_speed`, `decelerating`, `dropping`) y homografía auto con más puntos.
+- **MEJORA GOD (Visión):** YOLO custom (v11/v12) vía `--yolo-model`, tracking EKF, fallback híbrido YOLO + clásico + optical-flow (Farneback), detección de fase (`high_speed`, `decelerating`, `dropping`) y homografía auto con más puntos.
 - **MEJORA GOD (Tracking):** estado expandido `θ, ω, α, friction`, ruido adaptativo por fase, fallback multiobjeto con ByteTrack cuando hay oclusiones.
 - **MEJORA GOD (Física):** híbrido físico + red residual (`engine/hybrid_physics.py`), Monte Carlo avanzado (hasta 2000 sims), entropía de Shannon, wheel-bias adaptativo, fórmula multifactor de confianza.
 - **MEJORA GOD (Decisión):** señal fuerte solo cuando `edge > 0.15`, `confidence > 0.78` y entropía baja.
@@ -188,6 +188,14 @@ python main.py \
   --backend onnx \
   --enhance-image \
   --enhance-level high
+
+# Motor TensorRT (modelo .engine exportado con ultralytics)
+python main.py \
+  --source 0 \
+  --online-mode \
+  --capture-mode webcam \
+  --backend tensorrt \
+  --yolo-model models/roulette.engine
 ```
 
 ### Setup OBS + Virtual Camera (captura estable)

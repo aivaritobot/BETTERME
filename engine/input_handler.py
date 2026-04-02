@@ -40,6 +40,8 @@ class InputHandler:
         self._screen_queue: queue.Queue = queue.Queue(maxsize=2)
         self._screen_thread: threading.Thread | None = None
         self._recent_centers: deque[tuple[int, int]] = deque(maxlen=self.anti_jitter_size)
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        self._window_monitor = None
 
     # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
     def open(self) -> None:
@@ -110,7 +112,7 @@ class InputHandler:
         cv2 = _load_cv2()
         if cv2 is None or self._mss_instance is None:
             return
-        monitor = self._mss_instance.monitors[1]
+        monitor = self._resolve_monitor()
         while self._screen_running:
             try:
                 raw = np.array(self._mss_instance.grab(monitor))
@@ -123,6 +125,40 @@ class InputHandler:
                     self._screen_queue.put_nowait((frame, time.time()))
             except Exception:
                 time.sleep(0.01)
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _resolve_monitor(self) -> dict:
+        if self._mss_instance is None:
+            return {"left": 0, "top": 0, "width": 1, "height": 1}
+        if self.capture_mode != "window":
+            return self._mss_instance.monitors[1]
+        if self._window_monitor is not None:
+            return self._window_monitor
+        self._window_monitor = self._find_window_monitor()
+        return self._window_monitor
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _find_window_monitor(self) -> dict:
+        if self._mss_instance is None:
+            return {"left": 0, "top": 0, "width": 1, "height": 1}
+        fallback = self._mss_instance.monitors[1]
+        if not self.window_title:
+            return fallback
+        try:
+            import pygetwindow as gw  # type: ignore
+
+            wins = gw.getWindowsWithTitle(self.window_title)
+            if wins:
+                w = wins[0]
+                return {
+                    "left": max(0, int(w.left)),
+                    "top": max(0, int(w.top)),
+                    "width": max(64, int(w.width)),
+                    "height": max(64, int(w.height)),
+                }
+        except Exception:
+            return fallback
+        return fallback
 
     def _read_screen(self):
         if not self._screen_running:

@@ -201,6 +201,8 @@ class RouletteVision:
         self._last_detection = (None, None, 0.0)
         self._input_handler = None
         self._onnx_session = None
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        self._tensorrt_ready = False
         self._frame_time_hist: deque[float] = deque(maxlen=30)
 
     @staticmethod
@@ -318,6 +320,8 @@ class RouletteVision:
             self._use_screen = capture_mode in {"screen", "window"}
         if self.backend == "onnx":
             self._init_onnx_backend()
+        elif self.backend == "tensorrt":
+            self._init_tensorrt_backend()
 
     # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
     def _init_onnx_backend(self) -> None:
@@ -333,6 +337,15 @@ class RouletteVision:
             self._onnx_session = ort.InferenceSession(model_path, providers=providers)
         except Exception:
             self._onnx_session = None
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _init_tensorrt_backend(self) -> None:
+        model_path = str(self.model_path)
+        self._tensorrt_ready = model_path.endswith(".engine")
+        if not self._tensorrt_ready:
+            return
+        # Nota: en esta versión mantenemos compatibilidad delegando en YOLO().predict
+        # con artefactos TensorRT exportados por ultralytics.
 
     # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
     def _enhance_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -428,7 +441,10 @@ class RouletteVision:
             try:
                 # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
                 conf_th = 0.2 if not self.online_mode else max(0.18, self.yolo_conf_threshold * 0.8)
-                result = self.model.predict(frame, conf=conf_th, verbose=False)[0]
+                # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+                result = self._predict_backend(frame, conf_th)
+                if result is None:
+                    raise RuntimeError("backend detection unavailable")
                 for i, (box, cls_idx) in enumerate(zip(result.boxes.xyxy, result.boxes.cls)):
                     x1, y1, x2, y2 = [int(v) for v in box.tolist()]
                     cx = (x1 + x2) // 2
@@ -479,8 +495,33 @@ class RouletteVision:
 
         out = (ball, marker, float(np.clip(det_conf, 0.0, 1.0)))
         self._last_detection = out
-        self._skip_counter = (self._skip_counter + 1) % (self.skip_frames + 1) if self.skip_frames > 0 else 0
+        dynamic_skip = self._dynamic_skip_frames()
+        self._skip_counter = (self._skip_counter + 1) % (dynamic_skip + 1) if dynamic_skip > 0 else 0
         return out
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _predict_backend(self, frame: np.ndarray, conf_th: float):
+        if self.model is None:
+            return None
+        if self.backend == "onnx" and self._onnx_session is not None:
+            return self.model.predict(frame, conf=conf_th, verbose=False)[0]
+        if self.backend == "tensorrt" and self._tensorrt_ready:
+            return self.model.predict(frame, conf=conf_th, verbose=False)[0]
+        return self.model.predict(frame, conf=conf_th, verbose=False)[0]
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _dynamic_skip_frames(self) -> int:
+        base = self.skip_frames
+        if not self.online_mode or len(self._frame_time_hist) < 5:
+            return base
+        times = list(self._frame_time_hist)[-10:]
+        deltas = np.diff(times)
+        if len(deltas) == 0:
+            return base
+        frame_dt = float(np.mean(np.clip(deltas, 1e-4, 1.0)))
+        if frame_dt > 0.05:
+            return max(base, 1)
+        return base
 
     @staticmethod
     def _angle(center: tuple[int, int] | None, p: tuple[int, int] | None) -> float | None:
