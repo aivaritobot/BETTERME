@@ -36,6 +36,38 @@ ALEXBOT/
     └── generate_demo_video.py
 ```
 
+# ALEXBOT V3 PRO (Experimental Visual Predictor)
+
+Proyecto experimental de visión por computador para estimar el ángulo de una bola y el marcador de referencia del rotor dentro de una ROI calibrada.
+
+## Estructura
+
+```text
+/ALEXBOT
+│   main.py
+│   calibrate.py
+│   requirements.txt
+│   config.json (autogenerado)
+├── engine
+│   ├── vision.py
+│   └── physics.py
+├── ui
+│   └── overlay.py
+└── utils
+    └── mapping.py
+```
+
+## Flujo de ejecución
+
+1. Ejecuta `calibrate.py` para generar `config.json` con la ROI.
+2. Ejecuta `main.py`.
+3. El sistema:
+   - captura video de la ROI,
+   - detecta bola y marcador verde del rotor,
+   - estima cinemática (omega/alpha) para la bola,
+   - proyecta ángulo relativo bola-vs-rotor,
+   - muestra el resultado en un overlay.
+
 ## Instalación
 
 ```bash
@@ -106,3 +138,19 @@ pytest -q
 - La detección depende de iluminación/compresión/calidad del stream.
 - El modelo de caída no incluye rebotes/deflectores/interacciones complejas.
 - El sistema debe considerarse herramienta de análisis experimental, no predictor robusto garantizado.
+## Uso
+
+```bash
+python3 calibrate.py
+python3 main.py
+```
+
+## Limitaciones reales
+
+- No garantiza precisión estable entre mesas/cámaras/iluminación.
+- El modelo de caída es una aproximación cinemática, no un simulador físico completo.
+- Requiere recalibración y ajuste por entorno.
+
+## Aviso
+
+Este repositorio se mantiene como experimento técnico de visión + señal temporal. No incluye automatización de apuestas.
