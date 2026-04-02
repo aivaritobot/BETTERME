@@ -78,7 +78,6 @@ class AlexBotPhysics:
         ball_omega, ball_alpha = self._estimate_kinematics(self.ball_history)
         if ball_omega is None or ball_alpha is None:
             return None
-
         if abs(ball_omega) < self.drop_omega_threshold:
             return None
 
@@ -96,7 +95,36 @@ class AlexBotPhysics:
         spread = min(14.0, abs(ball_omega) * 0.05)
         ball_pred = (impact_angle + spread) % 360
         confidence = max(0.0, min(1.0, (abs(ball_omega) / 35.0 + abs(ball_alpha) / 120.0) / 2.0))
+        return Prediction(ball_pred=ball_pred, rotor_pred=rotor_pred, impact_angle=impact_angle, confidence=confidence)
 
+
+class UniversalCylinderMap:
+    def __init__(self, mode: str = 'European'):
+        self.mode = mode
+        self.euro_wheel = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
+        self.usa_wheel = [0, 28, 9, 26, 30, 11, 7, 20, 32, 17, 5, 22, 34, 15, 3, 24, 36, 13, 1, '00', 27, 10, 25, 29, 12, 8, 19, 31, 18, 6, 21, 33, 16, 4, 23, 35, 14, 2]
+
+    def set_mode(self, mode: str):
+        if mode in {'European', 'American'}:
+            self.mode = mode
+
+    @property
+    def wheel(self):
+        return self.euro_wheel if self.mode == 'European' else self.usa_wheel
+
+    def get_neighbors(self, number: int | str, span: int = 2) -> list[int | str]:
+        wheel = self.wheel
+        if number not in wheel:
+            return []
+        idx = wheel.index(number)
+        return [wheel[(idx + i) % len(wheel)] for i in range(-span, span + 1)]
+
+
+class CylinderPhysics:
+    """Mapeo de rueda y detección de tendencia por sectores para modo EU/USA."""
+
+    def __init__(self, mode: str = 'European'):
+        self.map = UniversalCylinderMap(mode=mode)
         return Prediction(
             ball_pred=ball_pred,
             rotor_pred=rotor_pred,
@@ -119,6 +147,9 @@ class CylinderPhysics:
             'Orphelins': [1, 20, 14, 31, 9, 17, 34, 6],
             'Tier': [33, 16, 24, 5, 10, 23, 8, 30, 11, 36, 13, 27],
         }
+
+    def set_mode(self, mode: str):
+        self.map.set_mode(mode)
 
     def get_sector(self, number: int) -> str:
         for sector, numbers in self.sectors.items():
