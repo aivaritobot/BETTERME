@@ -152,3 +152,55 @@ python main.py --yolo-model runs/detect/train/weights/best.pt --god-mode
 ### Nota de rendimiento
 
 Para latencia baja y FPS altos, exporta YOLO a ONNX/TensorRT y usa resolución ajustada al ROI de rueda.
+
+## MÁXIMO NIVEL ONLINE SETUP
+
+> Todas estas mejoras son **opt-in** y no alteran el comportamiento legacy si no se activan.
+
+### Flags nuevas
+
+- `--online-mode`
+- `--god-mode`
+- `--capture-mode [webcam|rtsp|screen|window]`
+- `--window-title`
+- `--backend [cpu|onnx|tensorrt]`
+- `--enhance-image`
+- `--enhance-level [low|medium|high]`
+- `--narrow-size`
+
+### Ejemplos seguros de ejecución
+
+```bash
+# Webcam clásica + mejoras online activadas
+python main.py \
+  --source 0 \
+  --online-mode \
+  --capture-mode webcam \
+  --enhance-image \
+  --enhance-level medium \
+  --backend cpu
+
+# RTSP + backend ONNX (si el modelo está exportado a .onnx)
+python main.py \
+  --source rtsp://user:pass@host:554/stream \
+  --online-mode \
+  --capture-mode rtsp \
+  --backend onnx \
+  --enhance-image \
+  --enhance-level high
+```
+
+### Setup OBS + Virtual Camera (captura estable)
+
+1. Crea una escena en OBS con la fuente de video (mesa/ruleta o feed de prueba).
+2. Activa **Start Virtual Camera**.
+3. Ejecuta BETTERME apuntando a la webcam virtual (usualmente `--source 0` o `--source 1`).
+4. Si necesitas overlay externo, mantén el modo auditoría (`--audit-only`) y observa el dashboard.
+
+### Dashboard opcional (Streamlit)
+
+```bash
+streamlit run dashboard.py
+```
+
+Muestra métricas de confianza, edge y drawdown estimado desde `audit_log.csv`.

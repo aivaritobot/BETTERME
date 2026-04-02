@@ -10,6 +10,12 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
+from collections import deque
+
+try:  # pragma: no cover
+    from engine.input_handler import InputHandler
+except Exception:  # pragma: no cover
+    InputHandler = None  # type: ignore
 
 try:
     from ultralytics import YOLO
@@ -156,6 +162,7 @@ class RouletteVision:
         self._screen_running = False
 
         self.source = int(source) if str(source).isdigit() else source
+        self.model_path = model_path
         self.model = YOLO(model_path) if YOLO is not None else None
         self.cap = None
         self.wheel_center: tuple[int, int] | None = None
@@ -182,6 +189,19 @@ class RouletteVision:
         self._phase = "unknown"
         self._omega_hist: list[float] = []
         self._det_conf_hist: list[float] = []
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        self.online_mode = False
+        self.capture_mode = "webcam"
+        self.window_title = ""
+        self.backend = "cpu"
+        self.enhance_image = False
+        self.enhance_level = "medium"
+        self.skip_frames = 0
+        self._skip_counter = 0
+        self._last_detection = (None, None, 0.0)
+        self._input_handler = None
+        self._onnx_session = None
+        self._frame_time_hist: deque[float] = deque(maxlen=30)
 
     @staticmethod
     def _extract_token(raw_text: str) -> str | None:
@@ -213,6 +233,10 @@ class RouletteVision:
         return None
 
     def open(self) -> None:
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self._input_handler is not None:
+            self._input_handler.open()
+            return
         if self._use_screen:
             try:
                 import mss as _mss_mod
@@ -231,6 +255,9 @@ class RouletteVision:
             self.cap = cv2.VideoCapture(self.source)
 
     def close(self) -> None:
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self._input_handler is not None:
+            self._input_handler.close()
         self._screen_running = False
         if self._screen_thread is not None:
             self._screen_thread.join(timeout=1.0)
@@ -259,6 +286,81 @@ class RouletteVision:
                     self._screen_queue.put_nowait((frame, time.time()))
             except Exception:
                 time.sleep(0.01)
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def set_runtime_options(
+        self,
+        online_mode: bool = False,
+        capture_mode: str = "webcam",
+        window_title: str = "",
+        backend: str = "cpu",
+        enhance_image: bool = False,
+        enhance_level: str = "medium",
+        skip_frames: int = 0,
+    ) -> None:
+        self.online_mode = bool(online_mode)
+        self.capture_mode = capture_mode
+        self.window_title = window_title
+        self.backend = backend
+        self.enhance_image = bool(enhance_image) and self.online_mode
+        self.enhance_level = enhance_level if enhance_level in {"low", "medium", "high"} else "medium"
+        self.skip_frames = max(0, int(skip_frames))
+
+        if InputHandler is not None and (self.online_mode or capture_mode != "webcam"):
+            source_value = self.source
+            if capture_mode == "rtsp" and isinstance(source_value, int):
+                source_value = str(source_value)
+            self._input_handler = InputHandler(
+                source=str(source_value),
+                capture_mode=capture_mode,
+                window_title=window_title,
+            )
+            self._use_screen = capture_mode in {"screen", "window"}
+        if self.backend == "onnx":
+            self._init_onnx_backend()
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _init_onnx_backend(self) -> None:
+        if not isinstance(self.source, (str, int)):
+            return
+        model_path = self.model_path
+        if not isinstance(model_path, str) or not model_path.endswith(".onnx"):
+            return
+        try:
+            import onnxruntime as ort  # type: ignore
+
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            self._onnx_session = ort.InferenceSession(model_path, providers=providers)
+        except Exception:
+            self._onnx_session = None
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _enhance_frame(self, frame: np.ndarray) -> np.ndarray:
+        if not (self.online_mode and self.enhance_image):
+            return frame
+        cv2 = _load_cv2()
+        if cv2 is None:
+            return frame
+
+        level_map = {
+            "low": (2.0, (5, 5), 0.6, 0.15),
+            "medium": (2.8, (7, 7), 0.8, 0.20),
+            "high": (3.6, (9, 9), 1.0, 0.28),
+        }
+        clip, denoise_win, sharp_gain, deblur_gain = level_map.get(self.enhance_level, level_map["medium"])
+
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8))
+        l2 = clahe.apply(l)
+        merged = cv2.merge([l2, a, b])
+        enhanced = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+        enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, 5, 5, denoise_win[0], denoise_win[1])
+        blur = cv2.GaussianBlur(enhanced, (0, 0), 1.2)
+        sharpen = cv2.addWeighted(enhanced, 1.0 + sharp_gain, blur, -sharp_gain, 0)
+        # deblur ligero por realce de altas frecuencias
+        high = cv2.addWeighted(sharpen, 1.0 + deblur_gain, cv2.GaussianBlur(sharpen, (0, 0), 2.0), -deblur_gain, 0)
+        return high
 
     def _read_screen_frame(self):
         if not self._screen_running:
@@ -322,9 +424,11 @@ class RouletteVision:
         marker = None
         det_conf = 0.0
 
-        if self.model is not None:
+        if self.model is not None and (self._skip_counter == 0):
             try:
-                result = self.model.predict(frame, conf=0.2, verbose=False)[0]
+                # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+                conf_th = 0.2 if not self.online_mode else max(0.18, self.yolo_conf_threshold * 0.8)
+                result = self.model.predict(frame, conf=conf_th, verbose=False)[0]
                 for i, (box, cls_idx) in enumerate(zip(result.boxes.xyxy, result.boxes.cls)):
                     x1, y1, x2, y2 = [int(v) for v in box.tolist()]
                     cx = (x1 + x2) // 2
@@ -339,6 +443,8 @@ class RouletteVision:
                         det_conf = max(det_conf, conf)
             except Exception:
                 pass
+        elif self._skip_counter > 0:
+            return self._last_detection
 
         # MEJORA GOD: fallback híbrido YOLO+clásico+flow si confidence es baja
         if ball is None or (self.hybrid_detection and det_conf < self.yolo_conf_threshold):
@@ -371,7 +477,10 @@ class RouletteVision:
             except Exception:
                 pass
 
-        return ball, marker, float(np.clip(det_conf, 0.0, 1.0))
+        out = (ball, marker, float(np.clip(det_conf, 0.0, 1.0)))
+        self._last_detection = out
+        self._skip_counter = (self._skip_counter + 1) % (self.skip_frames + 1) if self.skip_frames > 0 else 0
+        return out
 
     @staticmethod
     def _angle(center: tuple[int, int] | None, p: tuple[int, int] | None) -> float | None:
@@ -414,7 +523,11 @@ class RouletteVision:
         dt = max(1e-4, now - self._last_frame_time)
         self._last_frame_time = now
 
-        if self._use_screen:
+        if self._input_handler is not None:
+            ok, frame, ts = self._input_handler.read()
+            if not ok or frame is None:
+                return None
+        elif self._use_screen:
             frame, ts = self._read_screen_frame()
             if frame is None:
                 return None
@@ -427,6 +540,9 @@ class RouletteVision:
             if not ok:
                 return None
             ts = now
+
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        frame = self._enhance_frame(frame)
 
         self.frame_idx += 1
         if self.wheel_center is None or (self.frame_idx % self.wheel_detect_interval == 0):
@@ -474,6 +590,7 @@ class RouletteVision:
         if ball_raw is not None:
             self._prev_ball = ball_raw
         self._prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self._frame_time_hist.append(time.time())
 
         return VisionState(
             frame=frame,

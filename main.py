@@ -40,6 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulate", action="store_true", help="Ejecuta simulación Monte Carlo 10k runs")
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--voice", action="store_true")
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    parser.add_argument("--online-mode", action="store_true", help="Activa mejoras opt-in para entornos online/live")
+    parser.add_argument("--capture-mode", choices=["webcam", "rtsp", "screen", "window"], default="webcam")
+    parser.add_argument("--window-title", default="", help="Título de ventana para captura de ventana")
+    parser.add_argument("--backend", choices=["cpu", "onnx", "tensorrt"], default="cpu")
+    parser.add_argument("--enhance-image", action="store_true", help="Activa pipeline opcional de mejora de imagen")
+    parser.add_argument("--enhance-level", choices=["low", "medium", "high"], default="medium")
+    parser.add_argument("--skip-frames", type=int, default=0, help="Salta N frames entre inferencias")
 
     # MEJORA GOD: todo opt-in
     parser.add_argument("--god-mode", action="store_true", help="Activa pipeline avanzado de visión+tracking+física")
@@ -76,6 +84,17 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
         multi_object_fallback=args.multi_object_fallback,
         yolo_conf_threshold=args.yolo_conf_threshold,
     )
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    if hasattr(vision, "set_runtime_options"):
+        vision.set_runtime_options(
+            online_mode=bool(args.online_mode),
+            capture_mode=args.capture_mode,
+            window_title=args.window_title,
+            backend=args.backend,
+            enhance_image=bool(args.enhance_image),
+            enhance_level=args.enhance_level,
+            skip_frames=max(0, int(args.skip_frames)),
+        )
     physics = AdvancedPhysicsEngine()
 
     cfg_path = Path(args.config)
@@ -91,6 +110,14 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
         cfg_runtime["hybrid_physics"] = bool(args.hybrid_physics or cfg_runtime.get("hybrid_physics", False))
         cfg_runtime["monte_carlo_sims"] = int(args.mc_sims or cfg_runtime.get("monte_carlo_sims", 500))
     cfg_runtime["narrow_sector_size"] = int(max(1, args.narrow_size))
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    cfg_runtime["online_mode"] = bool(args.online_mode)
+    if args.online_mode:
+        cfg_runtime["narrow_sector_size"] = int(max(1, args.narrow_size or 6))
+        cfg_runtime["god_single_threshold"] = max(float(cfg_runtime.get("god_single_threshold", 0.87)), 0.90)
+        cfg_runtime["min_max_prob"] = max(float(cfg_runtime.get("min_max_prob", 0.175)), 0.185)
+        cfg_runtime["max_entropy"] = min(float(cfg_runtime.get("max_entropy", 2.8)), 2.55)
+    cfg_runtime["drawdown_guard"] = float(cfg_runtime.get("drawdown_guard", 0.2))
 
     physics.update_hyperparams_from_config(cfg_runtime)
 

@@ -152,6 +152,8 @@ class AdvancedPhysicsEngine:
         self.god_single_threshold = 0.87
         self.min_max_prob = 0.175
         self.max_entropy = 2.8
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        self.online_mode = False
         self.config: dict = {}
 
         self.cylinder = UniversalCylinderMap(mode="European")
@@ -388,6 +390,11 @@ class AdvancedPhysicsEngine:
     def _advanced_monte_carlo(self, impact_deg: float) -> np.ndarray:
         # MEJORA GOD: MC con ruido sectorial + deflectores Von Mises
         sims = int(np.clip(self.monte_carlo_sims, 80, 2000))
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self.online_mode and len(self.ball_hist) > 20:
+            recent_std = float(np.std([a for _, a in self.ball_hist[-20:]]))
+            entropy_hint = np.clip(recent_std / 90.0, 0.0, 1.0)
+            sims = int(np.clip(sims * (1.1 + entropy_hint), 120, 2400))
         counts = np.zeros(37, dtype=float)
         sigma_sector = np.linspace(0.8, 1.3, 37)
         for _ in range(sims):
@@ -506,7 +513,19 @@ class AdvancedPhysicsEngine:
         bet = float(np.clip(bankroll * kelly_full * frac * dd_guard, 0.0, bankroll * 0.2))
 
         strong_signal = edge > 0.15 and confidence > 0.78 and normalized_entropy < self.min_entropy_signal
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self.online_mode:
+            strong_signal = (
+                confidence > 0.90
+                and float(np.max(probs)) > 0.185
+                and entropy_bits < 2.55
+                and edge > 0.0
+            )
         should = strong_signal if (self.god_mode or self.hybrid_physics) else (confidence > self.confidence_threshold and edge > self.edge_threshold)
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self.online_mode and recent_drawdown > self.drawdown_guard:
+            should = False
+            bet = 0.0
 
         idx_sorted = np.argsort(probs)[::-1]
         top_numbers = [self.cylinder.wheel[int(i)] for i in idx_sorted[:5]]
@@ -566,6 +585,8 @@ class AdvancedPhysicsEngine:
         self.dispersion_std_deg = float(cfg.get("dispersion_std_deg", self.dispersion_std_deg))
 
         self.god_mode = bool(cfg.get("god_mode", self.god_mode))
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        self.online_mode = bool(cfg.get("online_mode", self.online_mode))
         self.hybrid_physics = bool(cfg.get("hybrid_physics", self.hybrid_physics or self.god_mode))
         self.house_edge_adjust = float(cfg.get("house_edge_adjust", self.house_edge_adjust))
         self.payout_neto = float(cfg.get("payout_neto", self.payout_neto))
@@ -578,6 +599,12 @@ class AdvancedPhysicsEngine:
         self.god_single_threshold = float(cfg.get("god_single_threshold", self.god_single_threshold))
         self.min_max_prob = float(cfg.get("min_max_prob", self.min_max_prob))
         self.max_entropy = float(cfg.get("max_entropy", self.max_entropy))
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self.online_mode:
+            self.narrow_sector_size = int(max(1, cfg.get("narrow_sector_size", 6)))
+            self.god_single_threshold = max(self.god_single_threshold, 0.90)
+            self.min_max_prob = max(self.min_max_prob, 0.185)
+            self.max_entropy = min(self.max_entropy, 2.55)
 
         rng = np.random.default_rng()
         self._p_mu = rng.normal(self.mu, self.mu * 0.15, self._N_PARTICLES).clip(0.003, 0.1)

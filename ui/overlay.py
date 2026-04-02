@@ -62,6 +62,8 @@ def render_stealth_overlay(
     # === GOD SINGLE NUMBER MODE - AÑADIDO ===
     if prediction and prediction.get("display_text"):
         if prediction.get("mode") == "single_god":
+            # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+            cv2.rectangle(frame, (40, 90), (760, 230), (0, 255, 0), 2)
             cv2.putText(
                 frame,
                 prediction["display_text"],
