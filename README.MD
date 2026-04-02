@@ -4,7 +4,7 @@ Copia todo el bloque de abajo y pégalo en un archivo nuevo en tu repositorio ll
 
 ---
 
-# 🎡 alAIve Roulette Bot - Physics & Kinematics Predictor
+# 🎡  Bot - Physics & Kinematics Predictor
 
 Este proyecto es un sistema de **Visión Artificial** y **Física Cinemática** diseñado para predecir el sector de caída de la bola en una ruleta en vivo. Utiliza procesamiento de imagen en tiempo real para calcular la trayectoria antes de que se cierren las apuestas.
 
