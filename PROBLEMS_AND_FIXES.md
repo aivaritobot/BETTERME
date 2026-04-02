@@ -24,7 +24,3 @@
 ## 6) Física demasiado simplificada
 **Problema:** el modelo previo era casi lineal y no representaba fricción compuesta ni tiempo de caída de forma física.
 **Resolución:** se incorporó dinámica `dω/dt = -k_lin*ω - k_coulomb*sign(ω)`, integración temporal, estimación de impacto, dispersión heurística por deflectores y métrica de confianza.
-
-## 7) Fallo de libGL en arranque
-**Problema:** `python main.py --help` fallaba por `libGL.so.1` al importar OpenCV GUI en import-time.
-**Resolución:** imports de runtime se movieron dentro de `run()`, overlay pasó a ser opt-in (`--overlay`) y se cambió a `opencv-python-headless` para entornos sin GUI.
