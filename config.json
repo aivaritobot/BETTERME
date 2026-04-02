@@ -30,4 +30,12 @@
   "kelly_fraction_min": 0.25,
   "kelly_fraction_max": 0.5,
   "drawdown_guard": 0.2
+  ,
+  "online_mode": false,
+  "capture_mode": "webcam",
+  "window_title": "",
+  "backend": "cpu",
+  "enhance_image": false,
+  "enhance_level": "medium",
+  "skip_frames": 0
 }

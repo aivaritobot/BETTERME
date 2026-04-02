@@ -15,3 +15,6 @@ torchvision==0.19.1
 torchaudio==2.4.1
 optuna==4.0.0
 mss
+onnxruntime-gpu
+opencv-contrib-python
+streamlit
