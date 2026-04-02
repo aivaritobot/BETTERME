@@ -103,3 +103,40 @@ class AlexBotPhysics:
             impact_angle=impact_angle,
             confidence=confidence,
         )
+
+
+class CylinderPhysics:
+    """Mapeo de rueda europea y detección de tendencia por sectores."""
+
+    def __init__(self):
+        self.wheel_order = [
+            0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8,
+            23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12,
+            35, 3, 26,
+        ]
+        self.sectors = {
+            'Voisins': [22, 18, 29, 7, 28, 12, 35, 3, 26, 0, 32, 15, 19, 4, 21, 2, 25],
+            'Orphelins': [1, 20, 14, 31, 9, 17, 34, 6],
+            'Tier': [33, 16, 24, 5, 10, 23, 8, 30, 11, 36, 13, 27],
+        }
+
+    def get_sector(self, number: int) -> str:
+        for sector, numbers in self.sectors.items():
+            if number in numbers:
+                return sector
+        return 'Unknown'
+
+    def predict_physical_zone(self, last_numbers: list[int]) -> str | None:
+        if not last_numbers:
+            return None
+
+        recent = last_numbers[-5:]
+        sector_count: dict[str, int] = {}
+        for number in recent:
+            sector = self.get_sector(number)
+            sector_count[sector] = sector_count.get(sector, 0) + 1
+
+        best_sector, hits = max(sector_count.items(), key=lambda item: item[1])
+        if best_sector != 'Unknown' and hits >= 3:
+            return best_sector
+        return None
