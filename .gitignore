@@ -1,0 +1,5 @@
+# Evita subir tus datos de sesión y claves
+audit_log.csv
+__pycache__/
+.env
+config.ini
