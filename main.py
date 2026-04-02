@@ -5,6 +5,13 @@ import logging
 import time
 
 from utils.config import load_roi_from_config, parse_manual_roi
+import cv2
+
+from engine.physics import AlexBotPhysics
+from engine.vision import AlexBotVision
+from ui.overlay import show_alex_overlay
+from utils.config import load_roi_from_config, parse_manual_roi
+from utils.mapping import get_relative_prediction_angle
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +74,7 @@ def run(args: argparse.Namespace) -> int:
     brain = AlexBotPhysics()
 
     logger.info('Inicio OK | source=%s | roi=(%s,%s,%s,%s) | overlay=%s', args.source, roi.top, roi.left, roi.width, roi.height, args.overlay)
+    logger.info('Inicio OK | source=%s | roi=(%s,%s,%s,%s)', args.source, roi.top, roi.left, roi.width, roi.height)
 
     frame_count = 0
     last_log = 0.0
@@ -96,6 +104,29 @@ def run(args: argparse.Namespace) -> int:
             if now - last_log > 1.5:
                 logger.info(
                     'frame=%d ball=%s rotor=%s pred=%s conf=%s',
+
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord('q'), 27):
+                    logger.info('Salida solicitada por usuario.')
+                    break
+
+            now = time.time()
+            if now - last_log > 1.5:
+                logger.info(
+                    'frame=%d ball=%s rotor=%s pred=%s conf=%s',
+
+            brain.update(ball_angle, rotor_angle)
+            pred = brain.get_prediction()
+            relative_prediction = None
+            if pred is not None:
+                relative_prediction = get_relative_prediction_angle(pred.ball_pred, pred.rotor_pred)
+
+            show_alex_overlay(frame, relative_prediction, telemetry=pred, debug=debug)
+
+            now = time.time()
+            if now - last_log > 1.5:
+                logger.info(
+                    'frame=%d ball=%s rotor=%s pred=%s',
                     frame_count,
                     f'{ball_angle:.2f}' if ball_angle is not None else 'None',
                     f'{rotor_angle:.2f}' if rotor_angle is not None else 'None',
@@ -119,3 +150,95 @@ def run(args: argparse.Namespace) -> int:
 if __name__ == '__main__':
     cli = build_parser().parse_args()
     raise SystemExit(run(cli))
+
+            frame_count += 1
+            if args.max_frames > 0 and frame_count >= args.max_frames:
+                logger.info('max_frames alcanzado: %d', args.max_frames)
+                break
+    finally:
+        vision.close()
+        if args.overlay and cv2 is not None:
+            cv2.destroyAllWindows()
+
+    return 0
+
+
+if __name__ == '__main__':
+    cli = build_parser().parse_args()
+    raise SystemExit(run(cli))
+                )
+                last_log = now
+
+            frame_count += 1
+            if args.max_frames > 0 and frame_count >= args.max_frames:
+                logger.info('max_frames alcanzado: %d', args.max_frames)
+                break
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord('q'), 27):
+                logger.info('Salida solicitada por usuario.')
+                break
+    finally:
+        vision.close()
+        cv2.destroyAllWindows()
+
+    return 0
+
+
+if __name__ == '__main__':
+    cli = build_parser().parse_args()
+    raise SystemExit(run(cli))
+import json
+from engine.vision import AlexBotVision
+from engine.physics import AlexBotPhysics
+from ui.overlay import show_alex_overlay
+from utils.mapping import get_relative_prediction_angle
+
+
+try:
+    with open('config.json', 'r', encoding='utf-8') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    print('ALEXBOT ERROR: Primero debes ejecutar calibrate.py')
+    raise SystemExit(1)
+
+vision = AlexBotVision(config['roi'])
+brain = AlexBotPhysics()
+
+print('>>> ALEXBOT V3 PRO - SISTEMA DE PREDICCIÓN ACTIVADO')
+
+while True:
+    ball_angle, zero_angle, frame, debug = vision.get_alex_data()
+    brain.update(ball_angle, zero_angle)
+    telemetry = brain.get_prediction()
+
+    relative_prediction = None
+    if telemetry is not None:
+        relative_prediction = get_relative_prediction_angle(
+            telemetry.get('ball_pred'),
+            telemetry.get('rotor_pred'),
+        )
+
+    show_alex_overlay(
+        frame,
+        relative_prediction=relative_prediction,
+        telemetry=telemetry,
+        debug=debug,
+    )
+
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    print("ALEXBOT ERROR: Primero debes ejecutar calibrate.py")
+    exit()
+
+vision = AlexBotVision(config['roi'])
+brain = AlexBotPhysics()
+
+print(">>> ALEXBOT V3 PRO - SISTEMA DE PREDICCIÓN ACTIVADO")
+
+while True:
+    angle, frame = vision.get_alex_data()
+    prediction = brain.get_prediction(angle) if angle else None
+    show_alex_overlay(frame, prediction)
