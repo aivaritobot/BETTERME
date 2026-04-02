@@ -45,6 +45,7 @@ def render_stealth_overlay(
     edge: float,
     top_numbers: list,
     entropy: float = 1.0,
+    prediction: dict | None = None,
     legal_warning: bool = True,
 ):
     cv2 = _load_cv2()
@@ -57,6 +58,38 @@ def render_stealth_overlay(
     hud_color = (0, 220, 100) if confidence > 0.82 else (180, 180, 180)
     info = f"C:{confidence:.2f} E:{edge:.2f} H:{entropy:.2f} Top:{top_numbers[:3]}"
     cv2.putText(frame, info, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, hud_color, 1)
+
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    if prediction and prediction.get("display_text"):
+        if prediction.get("mode") == "single_god":
+            cv2.putText(
+                frame,
+                prediction["display_text"],
+                (60, 140),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                2.8,
+                prediction.get("color", (0, 255, 0)),
+                5,
+            )
+            cv2.putText(
+                frame,
+                f"Prob: {prediction.get('max_prob', 0.0)*100:.1f}% | Edge: {prediction.get('edge', 0.0):.1%}",
+                (60, 200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.1,
+                (0, 255, 0),
+                2,
+            )
+        else:
+            cv2.putText(
+                frame,
+                prediction["display_text"],
+                (60, 140),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.9,
+                prediction.get("color", (0, 255, 255)),
+                3,
+            )
 
     if legal_warning:
         cv2.putText(frame, "EXPERIMENTAL/RESEARCH ONLY", (12, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 255), 1)
