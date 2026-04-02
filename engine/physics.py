@@ -148,6 +148,11 @@ class AdvancedPhysicsEngine:
         self.kelly_fraction_min = 0.25
         self.kelly_fraction_max = 0.5
         self.drawdown_guard = 0.2
+        self.narrow_sector_size = 6
+        self.god_single_threshold = 0.87
+        self.min_max_prob = 0.175
+        self.max_entropy = 2.8
+        self.config: dict = {}
 
         self.cylinder = UniversalCylinderMap(mode="European")
         self.ball_hist: list[tuple[float, float]] = []
@@ -272,6 +277,26 @@ class AdvancedPhysicsEngine:
     def _shannon_entropy(p: np.ndarray) -> float:
         return float(-np.sum(p * np.log2(np.clip(p, 1e-12, None))))
 
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    def calculate_shannon_entropy(self, probabilities: dict[int | str, float]) -> float:
+        values = np.array(list(probabilities.values()), dtype=float)
+        return self._shannon_entropy(values)
+
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    def angle_to_number(self, angle_rad: float) -> int | str:
+        wheel = self.cylinder.wheel
+        idx = int((angle_rad % (2 * math.pi)) / (2 * math.pi) * len(wheel)) % len(wheel)
+        return wheel[idx]
+
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    def is_dropping_phase(self) -> bool:
+        return self._last_phase in {"drop", "impact", "descending", "pre_drop"}
+
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    @staticmethod
+    def calculate_edge(hit_probability: float, payout_neto: float = 35.0, house_edge_adjust: float = 0.0) -> float:
+        return float((hit_probability - 1.0 / 37.0) * payout_neto - house_edge_adjust)
+
     def _normalized_entropy(self, p: np.ndarray) -> float:
         return float(np.clip(self._shannon_entropy(p) / _MAX_ENTROPY_37, 0.0, 1.0))
 
@@ -280,6 +305,78 @@ class AdvancedPhysicsEngine:
         mean = float(np.mean(p))
         self.factor_tilt = float(np.clip((top / max(mean, 1e-9)) / 2.0, 1.0, 1.6))
         return self.factor_tilt
+
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    def get_god_prediction(
+        self,
+        particles: list[dict],
+        current_angle: float,
+        wheel_numbers: list[int | str],
+        base_confidence: float,
+    ) -> dict:
+        """Devuelve sector reducido o single number según condiciones GOD."""
+        if not particles:
+            return {
+                "sector": [],
+                "top_number": None,
+                "mode": "normal",
+                "display_text": "Sin señal",
+                "confidence": 0.0,
+                "edge": 0.0,
+                "max_prob": 0.0,
+                "entropy": float(_MAX_ENTROPY_37),
+                "color": (180, 180, 180),
+            }
+
+        prob_count = {num: 0 for num in wheel_numbers}
+        for p in particles:
+            landing_angle = p.get("angle", current_angle) % (2 * np.pi)
+            landing_num = self.angle_to_number(landing_angle)
+            if landing_num in prob_count:
+                prob_count[landing_num] += 1
+
+        total = sum(prob_count.values()) or 1
+        probabilities = {num: count / total for num, count in prob_count.items()}
+        sorted_probs = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)
+
+        top_1 = sorted_probs[0][0]
+        max_prob = float(sorted_probs[0][1])
+        entropy = float(self.calculate_shannon_entropy(probabilities))
+
+        is_god_signal = (
+            base_confidence > float(self.config.get("god_single_threshold", self.god_single_threshold))
+            and max_prob >= float(self.config.get("min_max_prob", self.min_max_prob))
+            and entropy <= float(self.config.get("max_entropy", self.max_entropy))
+            and self.is_dropping_phase()
+            and bool(self.config.get("god_mode", self.god_mode))
+        )
+
+        if is_god_signal:
+            sector = [top_1]
+            mode = "single_god"
+            display_text = f"GOD → {top_1}"
+            color = (0, 255, 0)
+            edge_prob = max_prob
+        else:
+            sector_size = int(max(1, self.config.get("narrow_sector_size", self.narrow_sector_size)))
+            sector = [num for num, _ in sorted_probs[:sector_size]]
+            mode = "narrow_sector"
+            display_text = f"Sector reducido TOP-{len(sector)}"
+            color = (0, 255, 255)
+            edge_prob = len(sector) / 37.0
+
+        edge = self.calculate_edge(edge_prob, payout_neto=self.payout_neto, house_edge_adjust=self.house_edge_adjust)
+        return {
+            "sector": sector,
+            "top_number": top_1,
+            "mode": mode,
+            "display_text": display_text,
+            "confidence": base_confidence,
+            "max_prob": max_prob,
+            "entropy": entropy,
+            "edge": edge,
+            "color": color,
+        }
 
     def _apply_wheel_bias(self, p: np.ndarray) -> np.ndarray:
         bias = self._wheel_bias_counts / max(1.0, np.sum(self._wheel_bias_counts))
@@ -414,6 +511,24 @@ class AdvancedPhysicsEngine:
         idx_sorted = np.argsort(probs)[::-1]
         top_numbers = [self.cylinder.wheel[int(i)] for i in idx_sorted[:5]]
 
+        god_payload = None
+        if self.god_mode:
+            # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+            particles = [
+                {"angle": (2 * math.pi * (int(i) / 37.0))}
+                for i, w in enumerate(probs)
+                for _ in range(int(max(1.0, float(w) * 1000)))
+            ]
+            god_payload = self.get_god_prediction(
+                particles=particles,
+                current_angle=math.radians(impact),
+                wheel_numbers=self.cylinder.wheel,
+                base_confidence=confidence,
+            )
+            if god_payload["sector"]:
+                top_numbers = list(god_payload["sector"])
+                edge = float(god_payload["edge"])
+
         best_idx = int(idx_sorted[0])
         self._wheel_bias_counts[best_idx] += 1.0
 
@@ -435,9 +550,16 @@ class AdvancedPhysicsEngine:
             "det_conf": self._last_det_conf,
             "strong_signal": strong_signal,
             "phase": self._last_phase,
+            "mode": god_payload["mode"] if god_payload else "normal",
+            "display_text": god_payload["display_text"] if god_payload else "",
+            "max_prob": float(god_payload["max_prob"]) if god_payload else float(p_hit),
+            "entropy": float(god_payload["entropy"]) if god_payload else float(entropy_bits),
+            "color": god_payload["color"] if god_payload else (180, 180, 180),
+            "top_number": god_payload["top_number"] if god_payload else (top_numbers[0] if top_numbers else None),
         }
 
     def update_hyperparams_from_config(self, cfg: dict) -> None:
+        self.config = dict(cfg)
         self.mu = float(cfg.get("mu", self.mu))
         self.beta = float(cfg.get("beta", self.beta))
         self.gamma = float(cfg.get("gamma", self.gamma))
@@ -452,6 +574,10 @@ class AdvancedPhysicsEngine:
         self.kelly_fraction_min = float(cfg.get("kelly_fraction_min", self.kelly_fraction_min))
         self.kelly_fraction_max = float(cfg.get("kelly_fraction_max", self.kelly_fraction_max))
         self.drawdown_guard = float(cfg.get("drawdown_guard", self.drawdown_guard))
+        self.narrow_sector_size = int(cfg.get("narrow_sector_size", self.narrow_sector_size))
+        self.god_single_threshold = float(cfg.get("god_single_threshold", self.god_single_threshold))
+        self.min_max_prob = float(cfg.get("min_max_prob", self.min_max_prob))
+        self.max_entropy = float(cfg.get("max_entropy", self.max_entropy))
 
         rng = np.random.default_rng()
         self._p_mu = rng.normal(self.mu, self.mu * 0.15, self._N_PARTICLES).clip(0.003, 0.1)

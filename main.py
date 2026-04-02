@@ -49,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--multi-object-fallback", action="store_true", help="Fallback ByteTrack ante oclusiones")
     parser.add_argument("--yolo-conf-threshold", type=float, default=0.75)
     parser.add_argument("--mc-sims", type=int, default=500, help="N simulaciones Monte Carlo en tiempo real")
+    # === GOD SINGLE NUMBER MODE - AÑADIDO ===
+    parser.add_argument("--narrow-size", type=int, default=6, help="Tamaño del sector reducido")
     return parser
 
 
@@ -88,6 +90,7 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
     else:
         cfg_runtime["hybrid_physics"] = bool(args.hybrid_physics or cfg_runtime.get("hybrid_physics", False))
         cfg_runtime["monte_carlo_sims"] = int(args.mc_sims or cfg_runtime.get("monte_carlo_sims", 500))
+    cfg_runtime["narrow_sector_size"] = int(max(1, args.narrow_size))
 
     physics.update_hyperparams_from_config(cfg_runtime)
 
@@ -125,6 +128,7 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
                 edge=pred["edge"],
                 top_numbers=pred["top_numbers"],
                 entropy=pred.get("normalized_entropy", 1.0),
+                prediction=pred,
                 legal_warning=True,
             )
 
