@@ -1,28 +1,37 @@
-import math
-import time
+import json
+from engine.vision import AlexBotVision
+from engine.physics import AlexBotPhysics
+from ui.overlay import show_alex_overlay
+from utils.mapping import get_relative_prediction_angle
 
-from core.vision import VisionEngine
-from core.physics import PhysicsBrain
-from drivers import stealth
 
-# Configuración del área de la ruleta (Ajustar a tu pantalla)
-vision = VisionEngine({'top': 200, 'left': 500, 'width': 600, 'height': 600})
-brain = PhysicsBrain()
+try:
+    with open('config.json', 'r', encoding='utf-8') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    print('ALEXBOT ERROR: Primero debes ejecutar calibrate.py')
+    raise SystemExit(1)
 
-print("ALEXBOT ACTIVADO - CALIBRANDO...")
+vision = AlexBotVision(config['roi'])
+brain = AlexBotPhysics()
+
+print('>>> ALEXBOT V3 PRO - SISTEMA DE PREDICCIÓN ACTIVADO')
 
 while True:
-    ball, zero, frame = vision.get_positions()
+    ball_angle, zero_angle, frame, debug = vision.get_alex_data()
+    brain.update(ball_angle, zero_angle)
+    telemetry = brain.get_prediction()
 
-    if ball and zero:
-        # 1. Calcular ángulos y velocidades
-        omega = brain.estimate_omega(math.atan2(ball[1], ball[0]))
+    relative_prediction = None
+    if telemetry is not None:
+        relative_prediction = get_relative_prediction_angle(
+            telemetry.get('ball_pred'),
+            telemetry.get('rotor_pred'),
+        )
 
-        # 2. Si la velocidad es la ideal para predecir (Ventana de apuesta)
-        if 5.0 > omega > 2.0:
-            prediction = brain.predict_drop_zone(omega, 1.2)
-            print(f"Predicción: Zona {prediction} - ENVIANDO APUESTA")
-
-            # 3. Ejecutar apuesta
-            stealth.place_bet_safe(800, 400)  # Coordenadas del tapete
-            time.sleep(15)  # Esperar a que termine la ronda
+    show_alex_overlay(
+        frame,
+        relative_prediction=relative_prediction,
+        telemetry=telemetry,
+        debug=debug,
+    )
