@@ -5,37 +5,63 @@ import importlib
 
 def _load_cv2():
     try:
-        return importlib.import_module('cv2')
+        return importlib.import_module("cv2")
     except Exception:  # pragma: no cover
         return None
 
 
-def _zone_rect(frame_shape, zone: str) -> tuple[tuple[int, int], tuple[int, int]]:
-    h, w = frame_shape[:2]
-    if zone == 'Docena 1':
-        return (int(w * 0.05), int(h * 0.70)), (int(w * 0.30), int(h * 0.95))
-    if zone == 'Docena 2':
-        return (int(w * 0.35), int(h * 0.70)), (int(w * 0.60), int(h * 0.95))
-    if zone == 'Docena 3':
-        return (int(w * 0.65), int(h * 0.70)), (int(w * 0.90), int(h * 0.95))
-    if zone == 'Rojo':
-        return (int(w * 0.08), int(h * 0.55)), (int(w * 0.32), int(h * 0.67))
-    if zone == 'Negro':
-        return (int(w * 0.68), int(h * 0.55)), (int(w * 0.92), int(h * 0.67))
-    return (int(w * 0.40), int(h * 0.40)), (int(w * 0.60), int(h * 0.60))
-
-
-def render_green_overlay(frame, recommended_zone: str, confidence: float):
+def render_live_overlay(
+    frame,
+    wheel_center,
+    wheel_radius,
+    ball_center,
+    marker_center,
+    confidence: float,
+    suggestion_text: str,
+    sector: list,
+    historical_accuracy: float,
+    edge: float,
+):
     cv2 = _load_cv2()
     if cv2 is None or frame is None:  # pragma: no cover
         return
 
-    (x1, y1), (x2, y2) = _zone_rect(frame.shape, recommended_zone)
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), -1)
-    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 0), 2)
-    cv2.putText(frame, f'ALTA PROBABILIDAD: {recommended_zone}', (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
-    cv2.putText(frame, f'Confianza: {confidence:.2%}', (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 255, 200), 2)
-    cv2.imshow('ALEXBOT OVERLAY', frame)
+    if wheel_center and wheel_radius:
+        cv2.circle(frame, wheel_center, wheel_radius, (60, 180, 60), 2)
+
+    if ball_center:
+        cv2.circle(frame, ball_center, 7, (255, 255, 255), -1)
+        if wheel_center:
+            cv2.arrowedLine(frame, wheel_center, ball_center, (230, 230, 230), 2)
+
+    if marker_center:
+        cv2.circle(frame, marker_center, 7, (0, 255, 0), -1)
+        if wheel_center:
+            cv2.arrowedLine(frame, wheel_center, marker_center, (0, 200, 0), 2)
+
+    sector_label = f"{sector[0]}-{sector[-1]}" if sector else "N/A"
+    color = (0, 220, 0) if confidence >= 0.70 else (0, 190, 255)
+
+    cv2.putText(frame, f"Confianza: {confidence:.1%}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+    cv2.putText(frame, f"Apuesta: {suggestion_text}", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    cv2.putText(frame, f"Sector: {sector_label}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 255, 220), 2)
+    cv2.putText(frame, f"Precision hist: {historical_accuracy:.1%} | Edge: {edge:.2f}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 220, 255), 2)
+
+    cv2.imshow("BETTERME Live Assistant", frame)
     cv2.waitKey(1)
+
+
+def render_green_overlay(frame, recommended_zone: str, confidence: float):
+    """Compat legacy."""
+    render_live_overlay(
+        frame=frame,
+        wheel_center=None,
+        wheel_radius=None,
+        ball_center=None,
+        marker_center=None,
+        confidence=confidence,
+        suggestion_text=f"{recommended_zone}",
+        sector=[],
+        historical_accuracy=0.0,
+        edge=0.0,
+    )

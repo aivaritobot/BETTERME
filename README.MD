@@ -1,223 +1,64 @@
-# ALEXBOT V3 (prototipo visual/overlay)
+# BETTERME (Experimental Live Roulette Visual Assistant)
 
-Este repositorio implementa un prototipo **experimental** de análisis visual sobre ruleta con overlay y telemetría.
+Prototipo de visión por computador para estimar zona probable de caída en ruleta y **mostrar sugerencias** en pantalla (y opcionalmente voz).  
+**No automatiza apuestas.**
 
-## Estado real
+## ⚠️ Advertencia legal y ética
 
-- ✅ Calibración de ROI para captura de pantalla.
-- ✅ Detección visual de bola (brillo/saturación) y marcador de rotor (HSV verde).
-- ✅ Modelo físico mejorado: ajuste local de dinámica (`dω/dt = -k_lin*ω - k_coulomb*sign(ω)`), integración temporal y proyección de impacto.
-- ✅ Capa heurística de dispersión por deflectores + métrica de confianza.
-- ✅ Overlay con sector, ángulo, telemetría y puntos de debug.
-- ✅ Logging útil en consola.
-- ⚠️ Sigue siendo un prototipo experimental (sensibilidad a iluminación/stream y dinámica no totalmente observable).
+Este software es **experimental**, **no garantiza ganancias** y su uso puede ser **ilegal o violar términos de servicio** en casinos físicos/u online. Úsalo solo en contextos de laboratorio/investigación y bajo tu responsabilidad.
 
-## Estructura final
+## Mejoras implementadas
 
-```text
-ALEXBOT/
-├── main.py
-├── run_demo.py
-├── calibrate.py
-├── requirements.txt
-├── engine/
-│   ├── vision.py
-│   └── physics.py
-├── ui/
-│   └── overlay.py
-├── utils/
-│   ├── config.py
-│   └── mapping.py
-├── tests/
-│   ├── test_config.py
-│   ├── test_mapping.py
-│   └── test_physics.py
-└── tools/
-    └── generate_demo_video.py
-```
-
-# ALEXBOT V3 PRO (Experimental Visual Predictor)
-
-Proyecto experimental de visión por computador para estimar el ángulo de una bola y el marcador de referencia del rotor dentro de una ROI calibrada.
+- Entrada en vivo por webcam (`--source 0`) o stream RTSP/archivo (`--source rtsp://...`).
+- Auto-detección de rueda por `HoughCircles` (sin ROI manual obligatoria).
+- Detección de bola/marcador con YOLOv8 (si hay modelo) + fallback robusto por visión clásica.
+- Tracking con filtro de Kalman para estabilizar detecciones entre frames.
+- Auto-calibración de fricción (`k_linear`, `k_coulomb`) desde spins en vivo y guardado en `config.json`.
+- Física mejorada: integración numérica con `scipy.integrate.odeint`, ruido por rebotes/deflectores y sector de 8-12 números según dispersión.
+- Overlay mejorado: confianza, sugerencia, sector, edge y precisión histórica.
+- Voz opcional con `pyttsx3`.
 
 ## Estructura
 
-```text
-/ALEXBOT
-│   main.py
-│   calibrate.py
-│   requirements.txt
-│   config.json (autogenerado)
-├── engine
-│   ├── vision.py
-│   └── physics.py
-├── ui
-│   └── overlay.py
-└── utils
-    └── mapping.py
-```
+- `main.py` → orquestador en vivo + sugerencias.
+- `engine/vision.py` → captura, detección rueda/objetos, tracking.
+- `engine/physics.py` → modelo físico, calibración, confianza, sugerencias.
+- `ui/overlay.py` → visualización en pantalla.
 
-## Flujo de ejecución
-
-1. Ejecuta `calibrate.py` para generar `config.json` con la ROI.
-2. Ejecuta `main.py`.
-3. El sistema:
-   - captura video de la ROI,
-   - detecta bola y marcador verde del rotor,
-   - estima cinemática (omega/alpha) para la bola,
-   - proyecta ángulo relativo bola-vs-rotor,
-   - muestra el resultado en un overlay.
-
-## Instalación
+## Instalación (Python 3.10+)
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Dependencias clave
 
-## Modelo físico actual (resumen)
+- `opencv-python`
+- `numpy`
+- `scipy`
+- `ultralytics`
+- `pyttsx3`
 
-1. Estima `ω` instantánea con diferencias angulares envueltas.
-2. Ajusta una regresión local `ω(t)` para derivar `α` efectiva.
-3. Identifica coeficientes de fricción lineal + Coulomb.
-4. Integra la dinámica hasta umbral de caída para obtener `t_drop`.
-5. Proyecta ángulo de impacto y aplica una dispersión heurística por deflectores.
-
-## Modos de ejecución (demo reproducible)
-
-### 1) Demo sobre video local
-
-1. Genera video sintético (opcional, reproducible):
-   ```bash
-   python tools/generate_demo_video.py --output demo.mp4
-   ```
-2. Ejecuta la demo:
-   ```bash
-   python main.py --source video --video-path demo.mp4 --roi-manual 0,0,800,800 --overlay
-   ```
-
-> Usa `--max-frames 300` para pruebas rápidas.
-
-### 2) Demo sobre captura de pantalla
-
-1. Calibra ROI:
-   ```bash
-   python calibrate.py
-   ```
-2. Ejecuta:
-   ```bash
-   python main.py --source screen --config config.json --overlay
-   ```
-
-### 3) Demo con overlay + logs
-
-```bash
-python main.py --source video --video-path demo.mp4 --roi-manual 0,0,800,800 --log-level INFO --overlay
-```
-
-## Script de arranque simple
-
-```bash
-python run_demo.py --mode video --video-path demo.mp4 --roi-manual 0,0,800,800 --overlay
-```
-
-## Teclas
-
-- `q` o `ESC`: salir.
-
-
-## Auditoría reproducible
-
-```bash
-python tools/run_audit.py
-```
-
-Genera validación automática de sintaxis, tests, help CLI y smoke E2E en modo video.
-
-## Tests básicos
-
-```bash
-pytest -q
-```
-
-## Limitaciones pendientes
-
-- La detección depende de iluminación/compresión/calidad del stream.
-- El componente de deflectores es heurístico y requiere ajuste por rueda/dealer para mejorar calibración.
-- Ningún sistema de visión 2D garantiza precisión universal en todas las mesas y condiciones de streaming.
-
-### 3) Demo con overlay + logs
-
-```bash
-python main.py --source video --video-path demo.mp4 --roi-manual 0,0,800,800 --log-level INFO --overlay
-```
-
-## Script de arranque simple
-
-```bash
-python run_demo.py --mode video --video-path demo.mp4 --roi-manual 0,0,800,800 --overlay
-```
-
-## Teclas
-
-- `q` o `ESC`: salir.
-
-## Tests básicos
-
-```bash
-pytest -q
-```
-
-## Limitaciones pendientes
-
-- La detección depende de iluminación/compresión/calidad del stream.
-- El componente de deflectores es heurístico y requiere ajuste por rueda/dealer para mejorar calibración.
-- Ningún sistema de visión 2D garantiza precisión universal en todas las mesas y condiciones de streaming.
-   python main.py --source screen --config config.json
-   ```
-
-### 3) Demo con overlay + logs
-
-```bash
-python main.py --source video --video-path demo.mp4 --roi-manual 0,0,800,800 --log-level INFO
-```
-
-## Script de arranque simple
-
-```bash
-python run_demo.py --mode video --video-path demo.mp4 --roi-manual 0,0,800,800
-```
-
-## Teclas
-
-- `q` o `ESC`: salir.
-
-## Tests básicos
-
-```bash
-pytest -q
-```
-
-## Limitaciones pendientes
-
-- La detección depende de iluminación/compresión/calidad del stream.
-- El modelo de caída no incluye rebotes/deflectores/interacciones complejas.
-- El sistema debe considerarse herramienta de análisis experimental, no predictor robusto garantizado.
 ## Uso
 
+### Webcam
 ```bash
-python3 calibrate.py
-python3 main.py
+python main.py --source 0 --bankroll 200 --confidence-threshold 0.70
 ```
 
-## Limitaciones reales
+### RTSP
+```bash
+python main.py --source "rtsp://usuario:pass@host:554/stream" --voice
+```
 
-- No garantiza precisión estable entre mesas/cámaras/iluminación.
-- El modelo de caída es una aproximación cinemática, no un simulador físico completo.
-- Requiere recalibración y ajuste por entorno.
+### YOLO personalizado
+```bash
+python main.py --source 0 --yolo-model models/roulette_yolov8.pt
+```
 
-## Aviso
+## Notas
 
-Este repositorio se mantiene como experimento técnico de visión + señal temporal. No incluye automatización de apuestas.
+- Para voz en Linux puede requerirse `espeak`.
+- El valor de confianza es probabilístico y sensible a calidad de imagen.

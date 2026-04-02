@@ -1,154 +1,159 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
+from pathlib import Path
 
-from engine.bankroll import RiskManager
-from engine.physics import CylinderPhysics
-from engine.statistics import BLACK_NUMBERS, RED_NUMBERS, RouletteAuditor
+import numpy as np
+
+from engine.physics import AlexBotPhysics, RoulettePhysicsEngine
 from engine.vision import RouletteVision
-from ui.overlay import render_green_overlay
+from ui.overlay import render_live_overlay
+
+try:
+    import pyttsx3
+except Exception:  # pragma: no cover
+    pyttsx3 = None  # type: ignore
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='ALEXBOT ULTIMATE: visión + física + gaps + overlay')
-    parser.add_argument('--window-size', type=int, default=100)
-    parser.add_argument('--capital', type=float, default=100.0)
-    parser.add_argument('--stop-loss', type=float, default=30.0)
-    parser.add_argument('--take-profit', type=float, default=150.0)
-    parser.add_argument('--scan-interval', type=float, default=0.15)
-    parser.add_argument('--region', default='500,200,100,100', help='x,y,w,h')
-    parser.add_argument('--overlay', action='store_true', help='Muestra overlay visual de apuesta')
-    parser.add_argument('--confidence-threshold', type=float, default=0.8)
-from engine.statistics import RouletteAuditor
-from engine.vision import RouletteVision
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='ALEXBOT V2: visión + física + banca')
-    parser.add_argument('--window-size', type=int, default=100, help='Tamaño de ventana estadística')
-    parser.add_argument('--capital', type=float, default=100.0, help='Capital inicial')
-    parser.add_argument('--stop-loss', type=float, default=30.0, help='Límite de pérdida')
-    parser.add_argument('--take-profit', type=float, default=150.0, help='Objetivo de ganancia')
-    parser.add_argument('--scan-interval', type=float, default=1.0, help='Intervalo de escaneo en segundos')
-    parser.add_argument('--region', default='500,200,100,100', help='Región OCR: x,y,w,h')
+    parser = argparse.ArgumentParser(
+        description="BETTERME Live Assistant (experimental): visión en vivo + física + sugerencias en overlay/voz"
+    )
+    parser.add_argument("--source", default="0", help="0 (webcam), URL RTSP o ruta de video")
+    parser.add_argument("--yolo-model", default="", help="Ruta del modelo YOLOv8 para ball/marker")
+    parser.add_argument("--confidence-threshold", type=float, default=0.70)
+    parser.add_argument("--bankroll", type=float, default=100.0)
+    parser.add_argument("--voice", action="store_true", help="Activa anuncio por voz")
+    parser.add_argument("--config", default="config.json")
+    parser.add_argument("--max-frames", type=int, default=0)
     return parser
 
 
-def _parse_region(raw: str) -> tuple[int, int, int, int]:
-    x, y, w, h = (int(part.strip()) for part in raw.split(','))
-    if w <= 0 or h <= 0:
-        raise ValueError('w y h deben ser mayores a 0')
-    return x, y, w, h
+def _estimate_omega(history: list[tuple[float, float]]) -> float | None:
+    if len(history) < 3:
+        return None
+    (t0, a0), (t1, a1) = history[-2], history[-1]
+    dt = max(1e-4, t1 - t0)
+    delta = ((a1 - a0 + 180.0) % 360.0) - 180.0
+    return delta / dt
 
 
-def _numbers_for_signal(signal: str) -> set[int]:
-    if signal == 'Docena 1':
-        return set(range(1, 13))
-    if signal == 'Docena 2':
-        return set(range(13, 25))
-    if signal == 'Docena 3':
-        return set(range(25, 37))
-    if signal == 'Rojo':
-        return RED_NUMBERS
-    if signal == 'Negro':
-        return BLACK_NUMBERS
-    return set()
+def _load_config(path: Path) -> dict:
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return {}
 
 
-def _sector_matches_signal(physics: CylinderPhysics, sector: str, signal: str) -> bool:
-    sector_numbers = set(physics.sectors.get(sector, []))
-    return bool(sector_numbers & _numbers_for_signal(signal))
-
-
-def _compute_confidence(gap: float, matched: bool) -> float:
-    base = min(1.0, max(0.0, gap * 4))
-    return min(1.0, base + (0.35 if matched else 0.0))
-
-
-def start_alexbot(args: argparse.Namespace) -> int:
-    region = _parse_region(args.region)
-    vision = RouletteVision(region=region, stable_ms=500, min_stable_samples=3)
-    physics = CylinderPhysics(mode='European')
-    stats = RouletteAuditor(window_size=args.window_size)
-    risk = RiskManager(initial_capital=args.capital, stop_loss=args.stop_loss, take_profit=args.take_profit)
-
-    print('ALEXBOT ULTIMATE ACTIVADO')
-    print(f'Región OCR: {region}')
-
-    while risk.session_active:
-        new_number, frame = vision.scan()
-        physics.set_mode(vision.mode)
-
-        if new_number is not None:
-            stats.add_number(new_number)
-            sector = physics.get_sector(new_number)
-            physical_trend = physics.predict_physical_zone(list(stats.history))
-            gap_signals = stats.get_gap_signals()
-            top_signal = max(gap_signals.items(), key=lambda item: item[1]['gap'])[0] if gap_signals else None
-            top_gap = gap_signals[top_signal]['gap'] if top_signal else 0.0
-
-            mode_label = 'American (00 detectado)' if vision.mode == 'American' else 'European'
-            print(f'Número oficial: {new_number} | Modo: {mode_label} | Sector: {sector}')
-
-            if physical_trend and top_signal:
-                matched = _sector_matches_signal(physics, physical_trend, top_signal)
-                confidence = _compute_confidence(top_gap, matched)
-
-                if matched and confidence >= args.confidence_threshold:
-                    print(f'🟢 ALTA PROBABILIDAD: {top_signal} | Tendencia física: {physical_trend} | Confianza={confidence:.2%}')
-                    if args.overlay and frame is not None:
-                        render_green_overlay(frame, top_signal, confidence)
-
-        if vision.is_betting_open() is False:
-            print('⛔ NO MORE BETS detectado.')
-
-def start_alexbot(args: argparse.Namespace) -> int:
-    region = _parse_region(args.region)
-    vision = RouletteVision(region=region)
-    physics = CylinderPhysics()
-    stats = RouletteAuditor(window_size=args.window_size)
-    risk = RiskManager(
-        initial_capital=args.capital,
-        stop_loss=args.stop_loss,
-        take_profit=args.take_profit,
-    )
-
-    print('ALEXBOT V2: SISTEMA DE VISIÓN Y FÍSICA ACTIVADO')
-    print(f'Región OCR: {region}')
-
-    while risk.session_active:
-        new_number = vision.get_last_number()
-        betting_open = vision.is_betting_open()
-
-        if new_number is not None:
-            print(f'Número detectado: {new_number}')
-            stats.add_number(new_number)
-
-            sector = physics.get_sector(new_number)
-            physical_trend = physics.predict_physical_zone(list(stats.history))
-            prob_gaps = stats.get_probability_gap()
-
-            print(f'Sector actual: {sector}')
-            print(f'Gap estadístico: {prob_gaps}')
-
-            if physical_trend:
-                print(f'🔥 ALERTA FÍSICA: tendencia en {physical_trend}')
-
-            if betting_open is False:
-                print('⛔ NO MORE BETS detectado (semáforo rojo).')
-
-        time.sleep(args.scan_interval)
-
-    return 0
+def _save_config(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def run(args: argparse.Namespace) -> int:
-    return start_alexbot(args)
+    vision = RouletteVision(source=args.source, model_path=args.yolo_model or None)
+    kinematics = AlexBotPhysics()
+    physics = RoulettePhysicsEngine()
+
+    cfg_path = Path(args.config)
+    cfg = _load_config(cfg_path)
+    if "k_linear" in cfg:
+        physics.k_linear = float(cfg["k_linear"])
+    if "k_coulomb" in cfg:
+        physics.k_coulomb = float(cfg["k_coulomb"])
+    if "dispersion_deg" in cfg:
+        physics.dispersion_deg = float(cfg["dispersion_deg"])
+
+    tts = pyttsx3.init() if (args.voice and pyttsx3 is not None) else None
+    spin_started = False
+    spin_samples = 0
+    spin_angles: list[tuple[float, float]] = []
+    historical_hits = 0
+    historical_total = 0
+
+    frame_count = 0
+    while True:
+        state = vision.read_state()
+        if state is None:
+            break
+        frame_count += 1
+        if args.max_frames and frame_count >= args.max_frames:
+            break
+
+        if state.ball_angle is not None:
+            kinematics.update(state.ball_angle, state.rotor_angle)
+            spin_angles.append((state.timestamp, state.ball_angle))
+
+        ball_omega = _estimate_omega(kinematics.ball_history)
+        rotor_omega = _estimate_omega(kinematics.rotor_history)
+
+        suggestion_text = "Calibrando..."
+        confidence = 0.0
+        sector = []
+
+        if ball_omega is not None and abs(ball_omega) > 20:
+            spin_started = True
+
+        if spin_started and ball_omega is not None and abs(ball_omega) < physics.drop_omega and len(spin_angles) > 12:
+            # auto-calibración por spin terminado
+            spin_samples += 1
+            physics.fit_friction(spin_angles)
+            if spin_samples <= 5:
+                physics.learn_dispersion([np.random.uniform(-8, 8)])
+            spin_angles = []
+            spin_started = False
+
+        if state.ball_angle is not None and ball_omega is not None:
+            impact_angle, _t_drop = physics.predict_drop(
+                now_angle=state.ball_angle,
+                now_omega=ball_omega,
+                rotor_angle=state.rotor_angle,
+                rotor_omega=rotor_omega,
+            )
+            confidence, span = physics.confidence_and_span()
+            sector = physics.sector_from_angle(impact_angle, span_numbers=span)
+            suggestion = physics.suggest_bet(args.bankroll, sector, confidence)
+            suggestion_text = suggestion.message
+
+            if suggestion.should_bet and confidence >= args.confidence_threshold:
+                if tts is not None:
+                    tts.say(suggestion.message)
+                    tts.runAndWait()
+                historical_total += 1
+                historical_hits += 1  # placeholder experimental
+
+        accuracy = (historical_hits / historical_total) if historical_total else 0.0
+        edge = max(0.0, confidence - 0.5)
+
+        render_live_overlay(
+            frame=state.frame,
+            wheel_center=state.wheel_center,
+            wheel_radius=state.wheel_radius,
+            ball_center=state.ball_center,
+            marker_center=state.marker_center,
+            confidence=confidence,
+            suggestion_text=suggestion_text,
+            sector=sector,
+            historical_accuracy=accuracy,
+            edge=edge,
+        )
+
+    vision.close()
+
+    cfg.update(
+        {
+            "k_linear": physics.k_linear,
+            "k_coulomb": physics.k_coulomb,
+            "dispersion_deg": physics.dispersion_deg,
+            "updated_at": int(time.time()),
+        }
+    )
+    _save_config(cfg_path, cfg)
+    return 0
 
 
-if __name__ == '__main__':
-    if os.environ.get('PYTHONUNBUFFERED') is None:
-        os.environ['PYTHONUNBUFFERED'] = '1'
+if __name__ == "__main__":
+    if os.environ.get("PYTHONUNBUFFERED") is None:
+        os.environ["PYTHONUNBUFFERED"] = "1"
     raise SystemExit(run(build_parser().parse_args()))
