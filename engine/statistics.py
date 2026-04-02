@@ -9,6 +9,8 @@ BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33,
 
 class RouletteAuditor:
     """Analizador estadístico para docenas y color."""
+class RouletteAuditor:
+    """Analizador estadístico simple por docenas para auditoría en vivo."""
 
     def __init__(self, window_size: int = 100):
         self.history = deque(maxlen=window_size)
@@ -16,6 +18,9 @@ class RouletteAuditor:
             'Docena 1': set(range(1, 13)),
             'Docena 2': set(range(13, 25)),
             'Docena 3': set(range(25, 37)),
+            'Docena 1': range(1, 13),
+            'Docena 2': range(13, 25),
+            'Docena 3': range(25, 37),
         }
 
     def add_number(self, n: int) -> bool:
@@ -48,3 +53,10 @@ class RouletteAuditor:
         signals['Rojo'] = {'observed': red_obs, 'expected': 18 / 37, 'gap': 18 / 37 - red_obs}
         signals['Negro'] = {'observed': black_obs, 'expected': 18 / 37, 'gap': 18 / 37 - black_obs}
         return signals
+        total = len(self.history)
+        gaps: dict[str, float] = {}
+        for name, dozen_range in self.dozens.items():
+            seen = sum(1 for value in self.history if value in dozen_range)
+            gaps[name] = seen / total
+
+        return dict(sorted(gaps.items(), key=lambda item: item[1]))

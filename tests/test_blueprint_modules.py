@@ -1,4 +1,5 @@
 from engine.physics import CylinderPhysics, UniversalCylinderMap
+from engine.physics import CylinderPhysics
 from engine.vision import RouletteVision
 
 
