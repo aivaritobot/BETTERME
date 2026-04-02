@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""EXPERIMENTAL. Solo investigación. Ilegal en la mayoría de casinos. Riesgo total de pérdida."""
+
 import importlib
 
 
@@ -10,58 +12,57 @@ def _load_cv2():
         return None
 
 
-def render_live_overlay(
+def announce_text(text: str) -> None:
+    try:
+        import pyttsx3
+
+        tts = pyttsx3.init()
+        tts.say(text)
+        tts.runAndWait()
+    except Exception:
+        return
+
+
+def render_stealth_overlay(
     frame,
     wheel_center,
     wheel_radius,
-    ball_center,
-    marker_center,
     confidence: float,
-    suggestion_text: str,
-    sector: list,
-    historical_accuracy: float,
     edge: float,
+    top_numbers: list,
+    legal_warning: bool = True,
 ):
     cv2 = _load_cv2()
-    if cv2 is None or frame is None:  # pragma: no cover
+    if cv2 is None or frame is None:
         return
 
     if wheel_center and wheel_radius:
-        cv2.circle(frame, wheel_center, wheel_radius, (60, 180, 60), 2)
+        cv2.circle(frame, wheel_center, wheel_radius, (80, 80, 80), 1)
 
-    if ball_center:
-        cv2.circle(frame, ball_center, 7, (255, 255, 255), -1)
-        if wheel_center:
-            cv2.arrowedLine(frame, wheel_center, ball_center, (230, 230, 230), 2)
+    info = f"C:{confidence:.2f} E:{edge:.2f} Top:{top_numbers[:3]}"
+    cv2.putText(frame, info, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (210, 210, 210), 1)
 
-    if marker_center:
-        cv2.circle(frame, marker_center, 7, (0, 255, 0), -1)
-        if wheel_center:
-            cv2.arrowedLine(frame, wheel_center, marker_center, (0, 200, 0), 2)
+    if legal_warning:
+        cv2.putText(frame, "EXPERIMENTAL/RESEARCH ONLY", (12, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 255), 1)
 
-    sector_label = f"{sector[0]}-{sector[-1]}" if sector else "N/A"
-    color = (0, 220, 0) if confidence >= 0.70 else (0, 190, 255)
-
-    cv2.putText(frame, f"Confianza: {confidence:.1%}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-    cv2.putText(frame, f"Apuesta: {suggestion_text}", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-    cv2.putText(frame, f"Sector: {sector_label}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 255, 220), 2)
-    cv2.putText(frame, f"Precision hist: {historical_accuracy:.1%} | Edge: {edge:.2f}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 220, 255), 2)
-
-    cv2.imshow("BETTERME Live Assistant", frame)
+    cv2.imshow("BETTERME BESTIA", frame)
     cv2.waitKey(1)
 
 
-def render_green_overlay(frame, recommended_zone: str, confidence: float):
-    """Compat legacy."""
-    render_live_overlay(
+def render_live_overlay(*args, **kwargs):
+    frame = kwargs.get("frame") if kwargs else (args[0] if args else None)
+    confidence = kwargs.get("confidence", 0.0)
+    edge = kwargs.get("edge", 0.0)
+    sector = kwargs.get("sector", [])
+    render_stealth_overlay(
         frame=frame,
-        wheel_center=None,
-        wheel_radius=None,
-        ball_center=None,
-        marker_center=None,
+        wheel_center=kwargs.get("wheel_center"),
+        wheel_radius=kwargs.get("wheel_radius"),
         confidence=confidence,
-        suggestion_text=f"{recommended_zone}",
-        sector=[],
-        historical_accuracy=0.0,
-        edge=0.0,
+        edge=edge,
+        top_numbers=sector,
     )
+
+
+def render_green_overlay(frame, recommended_zone: str, confidence: float):
+    render_stealth_overlay(frame, None, None, confidence, 0.0, [recommended_zone])

@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+"""EXPERIMENTAL. Solo investigación. Ilegal en la mayoría de casinos. Riesgo total de pérdida."""
+
 import math
 import time
 from dataclasses import dataclass
 
 import numpy as np
+try:
+    from sklearn.linear_model import LinearRegression
+except Exception:  # pragma: no cover
+    class LinearRegression:  # minimal fallback
+        def __init__(self):
+            self.coef_ = [0.0, 0.0]
+        def fit(self, X, y):
+            self.coef_ = [0.0, 0.0]
+
+try:
+    from filterpy.kalman import ParticleFilter
+except Exception:  # pragma: no cover
+    ParticleFilter = None  # type: ignore
 
 try:
     from scipy.integrate import odeint
 except Exception:  # pragma: no cover
-    def odeint(func, y0, t):
-        y = np.zeros((len(t), len(y0)), dtype=float)
-        y[0] = y0
-        for i in range(1, len(t)):
-            dt = t[i] - t[i - 1]
-            y[i] = y[i - 1] + dt * np.array([func(y[i - 1][0], t[i - 1])])
-        return y
+    odeint = None  # type: ignore
 
 
 @dataclass
@@ -37,82 +46,25 @@ class BetSuggestion:
 
 
 class AlexBotPhysics:
-    """Compatibilidad con tests legacy + predicción cinemática base."""
-
     def __init__(self):
         self.ball_history: list[tuple[float, float]] = []
         self.rotor_history: list[tuple[float, float]] = []
-        self.max_history = 24
-        self.drop_omega_threshold = 3.2
-
-    def update(self, ball_angle: float | None, rotor_angle: float | None = None):
-        now = time.time()
-        if ball_angle is not None:
-            self.ball_history.append((now, ball_angle))
-        if rotor_angle is not None:
-            self.rotor_history.append((now, rotor_angle))
-        self._trim()
-
-    def _trim(self):
-        self.ball_history = self.ball_history[-self.max_history :]
-        self.rotor_history = self.rotor_history[-self.max_history :]
 
     @staticmethod
     def _angle_delta(a1: float, a2: float) -> float:
         return ((a2 - a1 + 180.0) % 360.0) - 180.0
 
-    @classmethod
-    def _estimate_kinematics(cls, history: list[tuple[float, float]]):
-        if len(history) < 5:
-            return None, None
-
-        omegas: list[float] = []
-        omega_times: list[float] = []
-        for i in range(1, len(history)):
-            t0, a0 = history[i - 1]
-            t1, a1 = history[i]
-            dt = t1 - t0
-            if dt <= 1e-6:
-                continue
-            dtheta = cls._angle_delta(a0, a1)
-            omegas.append(dtheta / dt)
-            omega_times.append((t0 + t1) * 0.5)
-
-        if len(omegas) < 4:
-            return None, None
-
-        omega = sum(omegas[-4:]) / 4.0
-        alpha_samples: list[float] = []
-        for i in range(1, len(omegas)):
-            dt = omega_times[i] - omega_times[i - 1]
-            if dt <= 1e-6:
-                continue
-            alpha_samples.append((omegas[i] - omegas[i - 1]) / dt)
-
-        alpha = sum(alpha_samples[-4:]) / max(1, min(4, len(alpha_samples)))
-        return omega, alpha
-
     def get_prediction(self) -> Prediction | None:
-        ball_omega, ball_alpha = self._estimate_kinematics(self.ball_history)
-        if ball_omega is None or ball_alpha is None:
+        if len(self.ball_history) < 3:
             return None
-        if abs(ball_omega) < self.drop_omega_threshold:
-            return None
-
-        t_drop = max(0.25, min(2.5, abs(ball_omega / max(abs(ball_alpha), 1e-4)) * 0.12))
-        ball_now = self.ball_history[-1][1]
-        impact_angle = (ball_now + ball_omega * t_drop + 0.5 * ball_alpha * (t_drop**2)) % 360
-
-        rotor_pred = None
-        rotor_omega, _ = self._estimate_kinematics(self.rotor_history)
-        if rotor_omega is not None and self.rotor_history:
-            rotor_now = self.rotor_history[-1][1]
-            rotor_pred = (rotor_now + rotor_omega * t_drop) % 360
-
-        spread = min(14.0, abs(ball_omega) * 0.05)
-        ball_pred = (impact_angle + spread) % 360
-        confidence = max(0.0, min(1.0, (abs(ball_omega) / 35.0 + abs(ball_alpha) / 120.0) / 2.0))
-        return Prediction(ball_pred=ball_pred, rotor_pred=rotor_pred, impact_angle=impact_angle, confidence=confidence)
+        (t0, a0), (t1, a1), (t2, a2) = self.ball_history[-3:]
+        dt = max(1e-4, t2 - t1)
+        w = self._angle_delta(a1, a2) / dt
+        a = (self._angle_delta(a0, a1) / max(1e-4, t1 - t0) - w) / max(1e-4, dt)
+        t_drop = min(3.0, max(0.2, abs(w / max(abs(a), 1e-3)) * 0.1))
+        impact = (a2 + w * t_drop + 0.5 * a * t_drop * t_drop) % 360
+        conf = float(np.clip(abs(w) / 100.0, 0.0, 1.0))
+        return Prediction(ball_pred=impact, rotor_pred=None, impact_angle=impact, confidence=conf)
 
 
 class UniversalCylinderMap:
@@ -129,161 +81,243 @@ class UniversalCylinderMap:
             4, 23, 35, 14, 2,
         ]
 
-    def set_mode(self, mode: str):
-        if mode in {"European", "American"}:
-            self.mode = mode
-
     @property
     def wheel(self):
         return self.euro_wheel if self.mode == "European" else self.usa_wheel
+
+    def set_mode(self, mode: str):
+        if mode in {"European", "American"}:
+            self.mode = mode
 
     def get_neighbors(self, number: int | str, span: int = 2) -> list[int | str]:
         wheel = self.wheel
         if number not in wheel:
             return []
-        idx = wheel.index(number)
-        return [wheel[(idx + i) % len(wheel)] for i in range(-span, span + 1)]
+        i = wheel.index(number)
+        return [wheel[(i + j) % len(wheel)] for j in range(-span, span + 1)]
 
 
 class CylinderPhysics:
     def __init__(self, mode: str = "European"):
-        self.map = UniversalCylinderMap(mode=mode)
+        self.map = UniversalCylinderMap(mode)
         self.sectors = {
             "Voisins": [22, 18, 29, 7, 28, 12, 35, 3, 26, 0, 32, 15, 19, 4, 21, 2, 25],
             "Orphelins": [1, 20, 14, 31, 9, 17, 34, 6],
             "Tier": [33, 16, 24, 5, 10, 23, 8, 30, 11, 36, 13, 27],
         }
 
-    def set_mode(self, mode: str):
-        self.map.set_mode(mode)
-
     def get_sector(self, number: int) -> str:
-        for sector, numbers in self.sectors.items():
-            if number in numbers:
-                return sector
+        for k, v in self.sectors.items():
+            if number in v:
+                return k
         return "Unknown"
 
     def predict_physical_zone(self, last_numbers: list[int]) -> str | None:
         if not last_numbers:
             return None
-        recent = last_numbers[-5:]
         counts: dict[str, int] = {}
-        for n in recent:
-            sector = self.get_sector(n)
-            counts[sector] = counts.get(sector, 0) + 1
-        best_sector, hits = max(counts.items(), key=lambda i: i[1])
-        return best_sector if best_sector != "Unknown" and hits >= 3 else None
+        for n in last_numbers[-5:]:
+            s = self.get_sector(n)
+            counts[s] = counts.get(s, 0) + 1
+        name, qty = max(counts.items(), key=lambda x: x[1])
+        return name if name != "Unknown" and qty >= 3 else None
 
 
-class RoulettePhysicsEngine:
-    """Modelo mejorado: fricción lineal + Coulomb + integración + dispersión gaussiana."""
+class AdvancedPhysicsEngine:
+    r"""Modelo híbrido 2D + calibración progresiva para investigación.
+
+    \[ \frac{d^2\theta_b}{dt^2} = -\mu g \operatorname{sign}(\omega_b) - \beta \omega_b^2 - \gamma (\omega_b - \omega_w) \]
+    """
 
     def __init__(self):
+        self.mu = 0.015
+        self.beta = 0.0009
+        self.gamma = 0.04
+        self.g = 9.81
+        self.dispersion_std_deg = 14.0
+        self.factor_tilt = 1.0
+        self.edge_threshold = 0.12
+        self.confidence_threshold = 0.68
+        self.bankroll_fraction = 0.5
         self.cylinder = UniversalCylinderMap(mode="European")
-        self.k_linear = 0.16
-        self.k_coulomb = 2.0
-        self.drop_omega = 12.0
-        self.dispersion_deg = 10.0
-        self.spin_errors: list[float] = []
+        self.ball_hist: list[tuple[float, float]] = []
+        self.rotor_hist: list[tuple[float, float | None]] = []
+        self.error_hist: list[float] = []
+        self.reg = LinearRegression()
+        self._pf = ParticleFilter(N=128, dim_x=1) if ParticleFilter is not None else None
 
     @staticmethod
-    def _angle_delta(a1: float, a2: float) -> float:
-        return ((a2 - a1 + 180.0) % 360.0) - 180.0
+    def _delta(a0: float, a1: float) -> float:
+        return ((a1 - a0 + 180) % 360) - 180
 
+    def observe(self, timestamp: float, ball_angle: float, rotor_angle: float | None) -> None:
+        self.ball_hist.append((timestamp, ball_angle))
+        self.ball_hist = self.ball_hist[-200:]
+        self.rotor_hist.append((timestamp, rotor_angle))
+        self.rotor_hist = self.rotor_hist[-200:]
+
+    def _estimate_omega(self, hist: list[tuple[float, float]]) -> float | None:
+        if len(hist) < 2:
+            return None
+        (t0, a0), (t1, a1) = hist[-2], hist[-1]
+        return self._delta(a0, a1) / max(1e-4, (t1 - t0))
+
+    def _small_tse_rhs(self, y, _t, omega_w):
+        theta_b, omega_b = y
+        dom = -self.mu * self.g * np.sign(omega_b) - self.beta * (omega_b**2) - self.gamma * (omega_b - omega_w)
+        return [omega_b, dom]
+
+    def _integrate(self, theta0: float, omega0: float, omega_w: float) -> tuple[float, float]:
+        t = np.linspace(0.0, 6.0, 600)
+        if odeint is None:
+            theta, omega = theta0, omega0
+            for _ in range(600):
+                dom = -self.mu * self.g * np.sign(omega) - self.beta * (omega**2) - self.gamma * (omega - omega_w)
+                omega += dom * 0.01
+                theta += omega * 0.01
+            return theta % 360.0, omega
+        sol = odeint(self._small_tse_rhs, [theta0, omega0], t, args=(omega_w,))
+        omega_series = sol[:, 1]
+        hit = np.where(np.abs(omega_series) < 9.0)[0]
+        idx = int(hit[0]) if len(hit) else -1
+        return float(sol[idx, 0] % 360.0), float(sol[idx, 1])
+
+    def _detect_tilt_bias(self, probs: np.ndarray) -> float:
+        sector = probs.reshape(37)
+        top = float(np.max(sector))
+        mean = float(np.mean(sector))
+        ratio = top / max(mean, 1e-9)
+        self.factor_tilt = float(np.clip(ratio / 2.0, 1.0, 1.6))
+        return self.factor_tilt
+
+    def auto_calibrate(self) -> None:
+        if len(self.ball_hist) < 10:
+            return
+        X = []
+        y = []
+        for i in range(1, len(self.ball_hist) - 1):
+            t0, a0 = self.ball_hist[i - 1]
+            t1, a1 = self.ball_hist[i]
+            t2, a2 = self.ball_hist[i + 1]
+            w1 = self._delta(a0, a1) / max(1e-4, t1 - t0)
+            w2 = self._delta(a1, a2) / max(1e-4, t2 - t1)
+            alpha = (w2 - w1) / max(1e-4, t2 - t0)
+            X.append([abs(w1), np.sign(w1)])
+            y.append(-alpha)
+        if len(X) >= 5:
+            self.reg.fit(np.asarray(X), np.asarray(y))
+            self.beta = float(np.clip(self.reg.coef_[0] * 0.0001, 0.0001, 0.02))
+            self.mu = float(np.clip(abs(self.reg.coef_[1]) * 0.001, 0.005, 0.08))
+
+    def _distribution_37(self, impact_angle: float) -> np.ndarray:
+        wheel = self.cylinder.wheel
+        center_idx = int((impact_angle / 360.0) * 37) % 37
+        sigma = max(4.0, self.dispersion_std_deg)
+        p = np.zeros(37, dtype=float)
+        for i in range(37):
+            dist = min(abs(i - center_idx), 37 - abs(i - center_idx))
+            p[i] = math.exp(-(dist**2) / (2 * (sigma / 9.5) ** 2))
+        p = p / p.sum()
+
+        # ruido estocástico en deflectores/pockets
+        noise = np.random.normal(0.0, 0.004, size=37)
+        p = np.clip(p + noise, 1e-9, None)
+        p /= p.sum()
+        return p
+
+    def predict_distribution_37(self, bankroll: float) -> dict:
+        if len(self.ball_hist) < 2:
+            return {
+                "distribution": np.ones(37) / 37,
+                "confidence": 0.0,
+                "edge": 0.0,
+                "top_numbers": [0],
+                "tilt_factor": 1.0,
+                "should_bet": False,
+                "bet_amount": 0.0,
+                "expected_profit_1h": 0.0,
+            }
+
+        theta0 = self.ball_hist[-1][1]
+        omega_b = self._estimate_omega(self.ball_hist) or 0.0
+        rotor_only = [(t, a) for t, a in self.rotor_hist if a is not None]
+        omega_w = self._estimate_omega(rotor_only) if rotor_only else 0.0
+        omega_w = 0.0 if omega_w is None else omega_w
+
+        impact, _ = self._integrate(theta0, omega_b, omega_w)
+        probs = self._distribution_37(impact)
+        p_hit = float(np.max(probs))
+        tilt_factor = self._detect_tilt_bias(probs)
+        confidence = float(np.clip(1 - (np.std(probs) * 37) / 360.0 * tilt_factor, 0.0, 0.99))
+        payout_neto = 35.0
+        edge = (p_hit - 1 / 37.0) * payout_neto
+
+        variance = max(0.05, float(np.var(probs) * 37.0))
+        kelly = bankroll * (edge / variance) * self.bankroll_fraction
+        bet = float(np.clip(kelly, 0.0, bankroll * 0.2))
+        should = edge > self.edge_threshold and confidence > self.confidence_threshold
+
+        idx_sorted = np.argsort(probs)[::-1]
+        top_numbers = [self.cylinder.wheel[int(i)] for i in idx_sorted[:5]]
+
+        expected_profit_1h = 22 * bet * edge
+        return {
+            "distribution": probs,
+            "confidence": confidence,
+            "edge": float(edge),
+            "top_numbers": top_numbers,
+            "tilt_factor": tilt_factor,
+            "should_bet": should,
+            "bet_amount": bet if should else 0.0,
+            "expected_profit_1h": expected_profit_1h,
+        }
+
+    def update_hyperparams_from_config(self, cfg: dict) -> None:
+        self.mu = float(cfg.get("mu", self.mu))
+        self.beta = float(cfg.get("beta", self.beta))
+        self.gamma = float(cfg.get("gamma", self.gamma))
+        self.dispersion_std_deg = float(cfg.get("dispersion_std_deg", self.dispersion_std_deg))
+
+    def export_calibration_state(self) -> dict:
+        return {
+            "mu": self.mu,
+            "beta": self.beta,
+            "gamma": self.gamma,
+            "dispersion_std_deg": self.dispersion_std_deg,
+            "updated_at": int(time.time()),
+        }
+
+
+class RoulettePhysicsEngine(AdvancedPhysicsEngine):
     def fit_friction(self, angle_history: list[tuple[float, float]]) -> None:
-        if len(angle_history) < 8:
+        if not angle_history:
             return
-        omegas = []
-        alphas = []
-        for i in range(1, len(angle_history) - 1):
-            t0, a0 = angle_history[i - 1]
-            t1, a1 = angle_history[i]
-            t2, a2 = angle_history[i + 1]
-            dt1 = max(1e-4, t1 - t0)
-            dt2 = max(1e-4, t2 - t1)
-            w1 = self._angle_delta(a0, a1) / dt1
-            w2 = self._angle_delta(a1, a2) / dt2
-            alpha = (w2 - w1) / max(1e-4, (t2 - t0) * 0.5)
-            omegas.append(w1)
-            alphas.append(alpha)
-
-        if len(omegas) < 5:
-            return
-
-        x1 = np.array(omegas)
-        x2 = np.sign(x1)
-        y = -np.array(alphas)
-        X = np.column_stack([x1, x2])
-        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-        self.k_linear = float(np.clip(coef[0], 0.01, 1.0))
-        self.k_coulomb = float(np.clip(coef[1], 0.1, 30.0))
+        self.ball_hist = angle_history[-100:]
+        self.auto_calibrate()
 
     def learn_dispersion(self, errors_deg: list[float]) -> None:
-        self.spin_errors.extend(errors_deg)
-        self.spin_errors = self.spin_errors[-30:]
-        if len(self.spin_errors) >= 3:
-            self.dispersion_deg = float(np.clip(np.std(self.spin_errors), 5.0, 22.0))
-
-    def _omega_rhs(self, omega: float, _t: float) -> float:
-        return -self.k_linear * omega - self.k_coulomb * np.sign(omega)
+        if not errors_deg:
+            return
+        self.dispersion_std_deg = float(np.clip(np.std(errors_deg), 5.0, 24.0))
 
     def predict_drop(self, now_angle: float, now_omega: float, rotor_angle: float | None, rotor_omega: float | None):
-        t = np.linspace(0, 6.0, 300)
-        omega_series = odeint(lambda w, tt: self._omega_rhs(float(w), tt), y0=[now_omega], t=t).flatten()
-
-        idx = np.where(np.abs(omega_series) <= self.drop_omega)[0]
-        stop_idx = int(idx[0]) if len(idx) else len(t) - 1
-        t_drop = float(t[stop_idx])
-
-        theta = now_angle
-        for i in range(1, stop_idx + 1):
-            dt = t[i] - t[i - 1]
-            theta = (theta + omega_series[i - 1] * dt) % 360.0
-
-        relative = theta
-        if rotor_angle is not None and rotor_omega is not None:
-            rotor_pred = (rotor_angle + rotor_omega * t_drop) % 360.0
-            relative = (theta - rotor_pred) % 360.0
-
-        bounce_noise = np.random.uniform(-10.0, 10.0)
-        impact = (relative + bounce_noise) % 360.0
-        return impact, t_drop
+        impact, _ = self._integrate(now_angle, now_omega, rotor_omega or 0.0)
+        return impact, 1.0
 
     def sector_from_angle(self, angle: float, span_numbers: int = 10) -> list[int | str]:
-        wheel = self.cylinder.wheel
-        idx = int((angle / 360.0) * len(wheel)) % len(wheel)
-        half = span_numbers // 2
-        return [wheel[(idx + i) % len(wheel)] for i in range(-half, half + 1)]
+        idx = int((angle / 360.0) * len(self.cylinder.wheel))
+        h = span_numbers // 2
+        return [self.cylinder.wheel[(idx + i) % len(self.cylinder.wheel)] for i in range(-h, h + 1)]
 
     def confidence_and_span(self) -> tuple[float, int]:
-        conf = float(np.clip(1.0 - self.dispersion_deg / 30.0, 0.45, 0.95))
-        span = int(np.clip(round(12 - (conf - 0.5) * 8), 8, 12))
-        return conf, span
+        c = float(np.clip(1.0 - self.dispersion_std_deg / 40.0, 0.45, 0.95))
+        span = int(np.clip(round(12 - c * 6), 8, 12))
+        return c, span
 
     def suggest_bet(self, bankroll: float, sector: list[int | str], confidence: float) -> BetSuggestion:
-        should_bet = confidence >= 0.70
-        base = max(1.0, bankroll * 0.01)
-        amount = float(round(base if should_bet else 0.0, 2))
-
-        # selección simple por edge aproximado
-        if confidence > 0.83 and len(sector) <= 9:
-            bet_type = "straight-up (35:1)"
-            target = sector[len(sector) // 2]
-            msg = f"Apuesta {amount} al {target}"
-        elif confidence > 0.75:
-            bet_type = "split (17:1)"
-            msg = f"Apuesta {amount} split en sector {sector[0]}-{sector[-1]}"
-        else:
-            bet_type = "docena (2:1)"
-            nums = [n for n in sector if isinstance(n, int)]
-            dozen = (min(nums) - 1) // 12 + 1 if nums else 2
-            msg = f"Apuesta {amount} a docena {dozen} / sector {sector[0]}-{sector[-1]}"
-
-        return BetSuggestion(
-            should_bet=should_bet,
-            confidence=confidence,
-            sector_numbers=sector,
-            message=msg,
-            bet_type=bet_type,
-            amount=amount,
-        )
+        edge = max(0.0, confidence - 0.5)
+        variance = max(0.2, 1.0 - confidence)
+        amount = float(np.clip(bankroll * (edge / variance) * 0.5, 0.0, bankroll * 0.1))
+        should = confidence > 0.68 and edge > 0.12
+        msg = f"EXPERIMENTAL: {'apostar' if should else 'esperar'} sector {sector[:5]}"
+        return BetSuggestion(should, confidence, sector, msg, "sector", amount)

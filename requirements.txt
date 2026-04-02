@@ -1,11 +1,13 @@
-numpy==1.26.0
-opencv-python
-scipy
-ultralytics
-pyttsx3
-python-dotenv==1.0.0
-mss
-pyautogui
-pytesseract
-pandas
-pytest
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+scipy==1.14.1
+ultralytics==8.3.0
+pyttsx3==2.90
+python-dotenv==1.0.1
+pandas==2.2.2
+matplotlib==3.9.2
+pytest==8.3.3
+telebot==0.0.5
+filterpy==1.4.5
+scikit-learn==1.5.2
+torch==2.4.1  # para posibles fine-tune
