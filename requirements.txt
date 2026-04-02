@@ -1,6 +1,8 @@
 numpy==1.26.0
 python-dotenv==1.0.0
-opencv-python-headless
+opencv-python
 mss
 pyautogui
+pytesseract
+pandas
 pytest

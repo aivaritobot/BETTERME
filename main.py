@@ -1,75 +1,78 @@
 from __future__ import annotations
 
 import argparse
-import logging
+import os
+import time
 
 from engine.bankroll import RiskManager
-from engine.roulette import RouletteAuditor
-
-
-logging.basicConfig(
-    filename='audit_log.csv',
-    level=logging.INFO,
-    format='%(asctime)s,%(message)s',
-)
+from engine.physics import CylinderPhysics
+from engine.statistics import RouletteAuditor
+from engine.vision import RouletteVision
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='ALEXBOT AUDIT SYSTEM')
+    parser = argparse.ArgumentParser(description='ALEXBOT V2: visión + física + banca')
     parser.add_argument('--window-size', type=int, default=100, help='Tamaño de ventana estadística')
-    parser.add_argument('--capital', type=float, default=None, help='Capital inicial para ejecutar sin prompt interactivo')
+    parser.add_argument('--capital', type=float, default=100.0, help='Capital inicial')
+    parser.add_argument('--stop-loss', type=float, default=30.0, help='Límite de pérdida')
+    parser.add_argument('--take-profit', type=float, default=150.0, help='Objetivo de ganancia')
+    parser.add_argument('--scan-interval', type=float, default=1.0, help='Intervalo de escaneo en segundos')
+    parser.add_argument('--region', default='500,200,100,100', help='Región OCR: x,y,w,h')
     return parser
 
 
-def run_bot(window_size: int = 100, initial_capital: float | None = None) -> int:
-    print('--- ALEXBOT AUDIT SYSTEM ACTIVATED ---')
+def _parse_region(raw: str) -> tuple[int, int, int, int]:
+    x, y, w, h = (int(part.strip()) for part in raw.split(','))
+    if w <= 0 or h <= 0:
+        raise ValueError('w y h deben ser mayores a 0')
+    return x, y, w, h
 
-    capital = initial_capital if initial_capital is not None else float(input('Capital total: '))
-    engine = RouletteAuditor(window_size=window_size)
-    risk = RiskManager(initial_capital=capital, stop_loss=capital * 0.3, take_profit=capital * 0.5)
+
+def start_alexbot(args: argparse.Namespace) -> int:
+    region = _parse_region(args.region)
+    vision = RouletteVision(region=region)
+    physics = CylinderPhysics()
+    stats = RouletteAuditor(window_size=args.window_size)
+    risk = RiskManager(
+        initial_capital=args.capital,
+        stop_loss=args.stop_loss,
+        take_profit=args.take_profit,
+    )
+
+    print('ALEXBOT V2: SISTEMA DE VISIÓN Y FÍSICA ACTIVADO')
+    print(f'Región OCR: {region}')
 
     while risk.session_active:
-        try:
-            entry = input("\nNúmero salido (o 'q' para salir): ")
-            if entry.lower() == 'q':
-                break
+        new_number = vision.get_last_number()
+        betting_open = vision.is_betting_open()
 
-            num = int(entry)
-            if not engine.add_number(num):
-                print('ERROR: número fuera de rango (0-36).')
-                continue
+        if new_number is not None:
+            print(f'Número detectado: {new_number}')
+            stats.add_number(new_number)
 
-            gaps = engine.get_probability_gap()
-            print(f'Probabilidades actuales: {gaps}')
+            sector = physics.get_sector(new_number)
+            physical_trend = physics.predict_physical_zone(list(stats.history))
+            prob_gaps = stats.get_probability_gap()
 
-            if isinstance(gaps, dict) and gaps:
-                suggestion = next(iter(gaps.keys()))
-            else:
-                suggestion = 'N/A'
+            print(f'Sector actual: {sector}')
+            print(f'Gap estadístico: {prob_gaps}')
 
-            logging.info('Capital: %s, Sugerencia: %s', risk.capital, suggestion)
+            if physical_trend:
+                print(f'🔥 ALERTA FÍSICA: tendencia en {physical_trend}')
 
-            # Ejemplo de flujo de apuesta (desactivado por defecto):
-            # bet = float(input('Monto apuesta: '))
-            # ok, message = risk.validate_bet(bet)
-            # print(message)
-            # if not ok:
-            #     break
-            # win = float(input('Ganancia/Pérdida de esta ronda: '))
-            # risk.update_capital(win)
+            if betting_open is False:
+                print('⛔ NO MORE BETS detectado (semáforo rojo).')
 
-        except ValueError:
-            print('ERROR: Introduce un número válido.')
-        except KeyboardInterrupt:
-            break
+        time.sleep(args.scan_interval)
 
     return 0
 
 
 def run(args: argparse.Namespace) -> int:
-    return run_bot(window_size=args.window_size, initial_capital=args.capital)
+    return start_alexbot(args)
 
 
 if __name__ == '__main__':
-    cli = build_parser().parse_args()
-    raise SystemExit(run(cli))
+    if os.environ.get('PYTHONUNBUFFERED') is None:
+        os.environ['PYTHONUNBUFFERED'] = '1'
+    raise SystemExit(run(build_parser().parse_args()))
