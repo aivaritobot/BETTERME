@@ -11,4 +11,7 @@ telebot==0.0.5
 filterpy==1.4.5
 scikit-learn==1.5.2
 torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+optuna==4.0.0
 mss

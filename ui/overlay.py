@@ -23,6 +23,20 @@ def announce_text(text: str) -> None:
         return
 
 
+def _draw_entropy_bar(frame, entropy: float) -> None:
+    """MEJORA GOD: barra visual de incertidumbre (entropía normalizada)."""
+    cv2 = _load_cv2()
+    if cv2 is None:
+        return
+    entropy = float(min(1.0, max(0.0, entropy)))
+    x, y, w, h = 12, 54, 180, 12
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (70, 70, 70), 1)
+    fill = int(w * (1.0 - entropy))
+    color = (0, 210, 100) if entropy < 0.35 else (0, 180, 220) if entropy < 0.55 else (70, 70, 255)
+    cv2.rectangle(frame, (x + 1, y + 1), (x + fill, y + h - 1), color, -1)
+    cv2.putText(frame, f"Uncertainty:{entropy:.2f}", (x + w + 8, y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 220), 1)
+
+
 def render_stealth_overlay(
     frame,
     wheel_center,
@@ -30,6 +44,7 @@ def render_stealth_overlay(
     confidence: float,
     edge: float,
     top_numbers: list,
+    entropy: float = 1.0,
     legal_warning: bool = True,
 ):
     cv2 = _load_cv2()
@@ -39,16 +54,14 @@ def render_stealth_overlay(
     if wheel_center and wheel_radius:
         cv2.circle(frame, wheel_center, wheel_radius, (80, 80, 80), 1)
 
-    # HUD verde solo cuando confianza Shannon > 0.82 (señal real)
     hud_color = (0, 220, 100) if confidence > 0.82 else (180, 180, 180)
-    info = f"C:{confidence:.2f} E:{edge:.2f} Top:{top_numbers[:3]}"
+    info = f"C:{confidence:.2f} E:{edge:.2f} H:{entropy:.2f} Top:{top_numbers[:3]}"
     cv2.putText(frame, info, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, hud_color, 1)
 
     if legal_warning:
-        cv2.putText(
-            frame, "EXPERIMENTAL/RESEARCH ONLY",
-            (12, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 255), 1,
-        )
+        cv2.putText(frame, "EXPERIMENTAL/RESEARCH ONLY", (12, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 255), 1)
+
+    _draw_entropy_bar(frame, entropy)
 
     cv2.imshow("BETTERME BESTIA", frame)
     cv2.waitKey(1)
@@ -66,6 +79,7 @@ def render_live_overlay(*args, **kwargs):
         confidence=confidence,
         edge=edge,
         top_numbers=sector,
+        entropy=kwargs.get("entropy", 1.0),
     )
 
 

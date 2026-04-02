@@ -15,10 +15,12 @@ except Exception:  # pragma: no cover
     odeint = None       # type: ignore
     _vonmises = None    # type: ignore
 
+try:  # pragma: no cover
+    from engine.hybrid_physics import HybridPhysicsResidual, ResidualTrainSample
+except Exception:  # pragma: no cover
+    HybridPhysicsResidual = None  # type: ignore
+    ResidualTrainSample = None  # type: ignore
 
-# ---------------------------------------------------------------------------
-# Legacy dataclasses (backward compat)
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Prediction:
@@ -37,10 +39,6 @@ class BetSuggestion:
     bet_type: str
     amount: float
 
-
-# ---------------------------------------------------------------------------
-# Wheel maps
-# ---------------------------------------------------------------------------
 
 class UniversalCylinderMap:
     def __init__(self, mode: str = "European"):
@@ -76,9 +74,9 @@ class CylinderPhysics:
     def __init__(self, mode: str = "European"):
         self.map = UniversalCylinderMap(mode)
         self.sectors = {
-            "Voisins":   [22, 18, 29, 7, 28, 12, 35, 3, 26, 0, 32, 15, 19, 4, 21, 2, 25],
+            "Voisins": [22, 18, 29, 7, 28, 12, 35, 3, 26, 0, 32, 15, 19, 4, 21, 2, 25],
             "Orphelins": [1, 20, 14, 31, 9, 17, 34, 6],
-            "Tier":      [33, 16, 24, 5, 10, 23, 8, 30, 11, 36, 13, 27],
+            "Tier": [33, 16, 24, 5, 10, 23, 8, 30, 11, 36, 13, 27],
         }
 
     def get_sector(self, number: int) -> str:
@@ -97,10 +95,6 @@ class CylinderPhysics:
         name, qty = max(counts.items(), key=lambda x: x[1])
         return name if name != "Unknown" and qty >= 3 else None
 
-
-# ---------------------------------------------------------------------------
-# Legacy simple predictor
-# ---------------------------------------------------------------------------
 
 class AlexBotPhysics:
     def __init__(self):
@@ -124,63 +118,55 @@ class AlexBotPhysics:
         return Prediction(ball_pred=impact, rotor_pred=None, impact_angle=impact, confidence=conf)
 
 
-# ---------------------------------------------------------------------------
-# PHOENIX-BESTIA V4 — Advanced Physics Engine
-# ---------------------------------------------------------------------------
-
-# Maximum possible Shannon entropy for 37 equiprobable outcomes (5.209 bits)
 _MAX_ENTROPY_37 = math.log2(37)
 
 
 class AdvancedPhysicsEngine:
-    r"""Modelo híbrido: ODE + SMC Particle Filter para fricción + Von Mises bounce.
-
-    Ecuación de movimiento:
-        d²θ/dt² = -μg·sign(ω) - β·ω² - γ·(ω - ω_rueda)
-
-    Calibración: Sequential Monte Carlo (256 partículas) actualiza μ y β
-    en tiempo real sin regresión lineal.
-
-    Distribución de impacto: Von Mises circular en lugar de Gaussiana,
-    capturando la naturaleza periódica del bounce en deflectores.
-
-    Confianza: Entropía de Shannon — mide cuánta "información" tiene el bot.
-    """
+    """MEJORA GOD: Engine híbrido físico+residual, con MC avanzado y decisión multifactor."""
 
     _N_PARTICLES = 256
 
     def __init__(self):
-        # --- Physical constants ---
-        self.mu = 0.015          # Coulomb friction coefficient
-        self.beta = 0.0009       # Quadratic air drag
-        self.gamma = 0.04        # Rotor coupling
+        self.mu = 0.015
+        self.beta = 0.0009
+        self.gamma = 0.04
         self.g = 9.81
 
-        # --- Uncertainty & thresholds ---
         self.dispersion_std_deg = 14.0
         self.factor_tilt = 1.0
         self.edge_threshold = 0.12
-        self.confidence_threshold = 0.82   # ← upgraded: Shannon entropy basis
+        self.confidence_threshold = 0.82
         self.bankroll_fraction = 0.5
 
-        # --- Wheel mapping ---
-        self.cylinder = UniversalCylinderMap(mode="European")
+        # MEJORA GOD: parámetros opt-in
+        self.god_mode = False
+        self.hybrid_physics = False
+        self.house_edge_adjust = 0.0
+        self.payout_neto = 35.0
+        self.monte_carlo_sims = 500
+        self.min_entropy_signal = 0.35
+        self.kelly_fraction_min = 0.25
+        self.kelly_fraction_max = 0.5
+        self.drawdown_guard = 0.2
 
-        # --- Observation history ---
+        self.cylinder = UniversalCylinderMap(mode="European")
         self.ball_hist: list[tuple[float, float]] = []
         self.rotor_hist: list[tuple[float, float | None]] = []
 
-        # --- SMC: particle swarm for friction coefficients ---
+        self._last_det_conf = 0.0
+        self._last_track_stability = 0.0
+        self._last_phase = "unknown"
+        self._last_kappa = 0.0
+        self._calib_quality = 0.5
+        self._wheel_bias_counts = np.ones(37, dtype=float)
+
         rng = np.random.default_rng()
-        self._p_mu = rng.normal(self.mu, self.mu * 0.15,
-                                self._N_PARTICLES).clip(0.003, 0.1)
-        self._p_beta = rng.normal(self.beta, self.beta * 0.15,
-                                  self._N_PARTICLES).clip(1e-5, 0.025)
+        self._p_mu = rng.normal(self.mu, self.mu * 0.15, self._N_PARTICLES).clip(0.003, 0.1)
+        self._p_beta = rng.normal(self.beta, self.beta * 0.15, self._N_PARTICLES).clip(1e-5, 0.025)
         self._p_w = np.ones(self._N_PARTICLES) / self._N_PARTICLES
 
-    # ------------------------------------------------------------------
-    # Core helpers
-    # ------------------------------------------------------------------
+        self._hybrid = HybridPhysicsResidual() if HybridPhysicsResidual else None
+        self._residual_samples: list = []
 
     @staticmethod
     def _delta(a0: float, a1: float) -> float:
@@ -194,16 +180,10 @@ class AdvancedPhysicsEngine:
             return None
         return self._delta(float(a0), float(a1)) / max(1e-4, t1 - t0)
 
-    # ------------------------------------------------------------------
-    # Sequential Monte Carlo — friction calibration
-    # ------------------------------------------------------------------
-
     def _smc_update_friction(self) -> None:
-        """Bayesian update of μ and β from observed deceleration."""
         if len(self.ball_hist) < 5:
             return
 
-        # Estimate recent alpha (angular acceleration) and omega
         recent = self.ball_hist[-8:]
         alphas, omegas = [], []
         for i in range(1, len(recent) - 1):
@@ -221,66 +201,44 @@ class AdvancedPhysicsEngine:
 
         obs_alpha = float(np.mean(alphas))
         obs_omega = float(np.mean(omegas))
-
-        # Predicted alpha from each particle
         pred_alpha = -(
             self._p_mu * self.g * np.sign(obs_omega)
             + self._p_beta * obs_omega ** 2
             + self.gamma * obs_omega
         )
 
-        # Gaussian likelihood
         sigma = max(0.5, abs(obs_alpha) * 0.2)
         log_w = -0.5 * ((pred_alpha - obs_alpha) / sigma) ** 2
-        log_w -= log_w.max()                     # numerical stability
+        log_w -= log_w.max()
         w = np.exp(log_w) + 1e-300
         w /= w.sum()
 
-        # Effective sample size → resample if collapsed
         n_eff = 1.0 / (w ** 2).sum()
         if n_eff < self._N_PARTICLES / 2:
             rng = np.random.default_rng()
             idx = rng.choice(self._N_PARTICLES, size=self._N_PARTICLES, p=w)
             jitter_mu = self._p_mu.std() * 0.05
             jitter_beta = self._p_beta.std() * 0.05
-            self._p_mu = (self._p_mu[idx]
-                          + rng.normal(0, max(jitter_mu, 1e-5), self._N_PARTICLES)
-                          ).clip(0.003, 0.1)
-            self._p_beta = (self._p_beta[idx]
-                            + rng.normal(0, max(jitter_beta, 1e-7), self._N_PARTICLES)
-                            ).clip(1e-5, 0.025)
+            self._p_mu = (self._p_mu[idx] + rng.normal(0, max(jitter_mu, 1e-5), self._N_PARTICLES)).clip(0.003, 0.1)
+            self._p_beta = (self._p_beta[idx] + rng.normal(0, max(jitter_beta, 1e-7), self._N_PARTICLES)).clip(1e-5, 0.025)
             self._p_w = np.ones(self._N_PARTICLES) / self._N_PARTICLES
         else:
             self._p_w = w
 
-        # Update point estimates from weighted mean
         self.mu = float(np.clip(np.average(self._p_mu, weights=self._p_w), 0.005, 0.08))
         self.beta = float(np.clip(np.average(self._p_beta, weights=self._p_w), 1e-5, 0.02))
 
-    # ------------------------------------------------------------------
-    # ODE integration
-    # ------------------------------------------------------------------
-
     def _rhs(self, y, _t, omega_w: float):
-        theta_b, omega_b = y
-        dom = (
-            -self.mu * self.g * np.sign(omega_b)
-            - self.beta * omega_b ** 2
-            - self.gamma * (omega_b - omega_w)
-        )
+        _theta_b, omega_b = y
+        dom = -self.mu * self.g * np.sign(omega_b) - self.beta * omega_b ** 2 - self.gamma * (omega_b - omega_w)
         return [omega_b, dom]
 
-    def _integrate(self, theta0: float, omega0: float,
-                   omega_w: float) -> tuple[float, float]:
+    def _integrate(self, theta0: float, omega0: float, omega_w: float) -> tuple[float, float]:
         t = np.linspace(0.0, 6.0, 600)
         if odeint is None:
             theta, omega = theta0, omega0
             for _ in range(600):
-                dom = (
-                    -self.mu * self.g * np.sign(omega)
-                    - self.beta * omega ** 2
-                    - self.gamma * (omega - omega_w)
-                )
+                dom = -self.mu * self.g * np.sign(omega) - self.beta * omega ** 2 - self.gamma * (omega - omega_w)
                 omega += dom * 0.01
                 theta += omega * 0.01
             return theta % 360.0, omega
@@ -290,60 +248,32 @@ class AdvancedPhysicsEngine:
         idx = int(hit[0]) if len(hit) else -1
         return float(sol[idx, 0] % 360.0), float(sol[idx, 1])
 
-    # ------------------------------------------------------------------
-    # Von Mises probability distribution over 37 slots
-    # ------------------------------------------------------------------
-
     def _distribution_37(self, impact_angle: float) -> np.ndarray:
-        """Von Mises circular distribution — proper model for periodic bounce."""
         center_idx = int((impact_angle / 360.0) * 37) % 37
-
-        # Convert dispersion (deg) → Von Mises concentration κ
-        # κ → 0: uniform (max chaos); κ → ∞: spike at center
         sigma_rad = max(0.05, math.radians(self.dispersion_std_deg))
         kappa = float(np.clip(1.0 / sigma_rad ** 2, 0.3, 60.0))
+        if self._last_kappa > 0:
+            kappa = float(np.clip((kappa + self._last_kappa) / 2.0, 0.3, 120.0))
 
-        # Evaluate Von Mises PDF at 37 equally-spaced points
         slots_rad = np.linspace(0.0, 2 * math.pi, 37, endpoint=False)
         center_rad = (center_idx / 37) * 2 * math.pi
 
         if _vonmises is not None:
             p = _vonmises.pdf(slots_rad, kappa, loc=center_rad)
         else:
-            # Fallback: wrapped Gaussian
-            dists = np.array([
-                min(abs(i - center_idx), 37 - abs(i - center_idx))
-                for i in range(37)
-            ], dtype=float)
+            dists = np.array([min(abs(i - center_idx), 37 - abs(i - center_idx)) for i in range(37)], dtype=float)
             p = np.exp(-0.5 * (dists / (self.dispersion_std_deg / 9.5)) ** 2)
 
         p = np.clip(p, 1e-12, None)
         p /= p.sum()
-
-        # Stochastic deflector scatter (small additive noise)
-        noise = np.abs(np.random.normal(0.0, 0.003, 37))
-        p = np.clip(p + noise, 1e-12, None)
-        p /= p.sum()
         return p
-
-    # ------------------------------------------------------------------
-    # Shannon entropy — information-theoretic confidence
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _shannon_entropy(p: np.ndarray) -> float:
-        """Shannon entropy in bits."""
         return float(-np.sum(p * np.log2(np.clip(p, 1e-12, None))))
 
-    @staticmethod
-    def _entropy_confidence(p: np.ndarray) -> float:
-        """Normalised confidence: 1 when fully concentrated, 0 when uniform."""
-        h = AdvancedPhysicsEngine._shannon_entropy(p)
-        return float(np.clip(1.0 - h / _MAX_ENTROPY_37, 0.0, 0.99))
-
-    # ------------------------------------------------------------------
-    # Tilt / bias detection
-    # ------------------------------------------------------------------
+    def _normalized_entropy(self, p: np.ndarray) -> float:
+        return float(np.clip(self._shannon_entropy(p) / _MAX_ENTROPY_37, 0.0, 1.0))
 
     def _detect_tilt_bias(self, p: np.ndarray) -> float:
         top = float(np.max(p))
@@ -351,22 +281,58 @@ class AdvancedPhysicsEngine:
         self.factor_tilt = float(np.clip((top / max(mean, 1e-9)) / 2.0, 1.0, 1.6))
         return self.factor_tilt
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _apply_wheel_bias(self, p: np.ndarray) -> np.ndarray:
+        bias = self._wheel_bias_counts / max(1.0, np.sum(self._wheel_bias_counts))
+        mixed = 0.90 * p + 0.10 * bias
+        mixed = np.clip(mixed, 1e-12, None)
+        mixed /= mixed.sum()
+        return mixed
 
-    def observe(self, timestamp: float, ball_angle: float,
-                rotor_angle: float | None) -> None:
+    def _advanced_monte_carlo(self, impact_deg: float) -> np.ndarray:
+        # MEJORA GOD: MC con ruido sectorial + deflectores Von Mises
+        sims = int(np.clip(self.monte_carlo_sims, 80, 2000))
+        counts = np.zeros(37, dtype=float)
+        sigma_sector = np.linspace(0.8, 1.3, 37)
+        for _ in range(sims):
+            slot = int((impact_deg / 360.0) * 37) % 37
+            jitter = np.random.vonmises(mu=0.0, kappa=max(0.5, self._last_kappa or 4.0))
+            jitter_deg = np.degrees(jitter)
+            jitter_deg += np.random.normal(0.0, self.dispersion_std_deg * sigma_sector[slot])
+            final_deg = (impact_deg + jitter_deg) % 360.0
+            idx = int((final_deg / 360.0) * 37) % 37
+            counts[idx] += 1.0
+        p = counts / max(1.0, counts.sum())
+        return np.clip(p, 1e-12, None)
+
+    def _maybe_residual_correction(self, impact: float, omega_b: float, omega_w: float) -> float:
+        if not (self.hybrid_physics and self._hybrid is not None):
+            return impact
+        features = [impact / 360.0, omega_b / 300.0, omega_w / 120.0, self.mu, self.beta * 1000.0, self.factor_tilt]
+        correction = self._hybrid.predict_residual_deg(features)
+        return float((impact + correction) % 360.0)
+
+    def observe(
+        self,
+        timestamp: float,
+        ball_angle: float,
+        rotor_angle: float | None,
+        det_confidence: float = 0.0,
+        track_stability: float = 0.0,
+        phase: str = "unknown",
+        angular_kappa: float = 0.0,
+    ) -> None:
         self.ball_hist.append((timestamp, ball_angle))
         self.ball_hist = self.ball_hist[-200:]
         self.rotor_hist.append((timestamp, rotor_angle))
         self.rotor_hist = self.rotor_hist[-200:]
 
-    def auto_calibrate(self) -> None:
-        """SMC-based friction calibration (replaces sklearn regression)."""
-        self._smc_update_friction()
+        self._last_det_conf = float(np.clip(det_confidence, 0.0, 1.0))
+        self._last_track_stability = float(np.clip(track_stability, 0.0, 1.0))
+        self._last_phase = phase
+        self._last_kappa = float(max(0.0, angular_kappa))
 
-        # Also update dispersion from recent prediction variance
+    def auto_calibrate(self) -> None:
+        self._smc_update_friction()
         if len(self.ball_hist) >= 10:
             omegas = []
             for i in range(1, min(20, len(self.ball_hist))):
@@ -376,9 +342,11 @@ class AdvancedPhysicsEngine:
                 omegas.append(w)
             if omegas:
                 omega_std = float(np.std(omegas))
-                self.dispersion_std_deg = float(
-                    np.clip(omega_std * 0.4 + self.dispersion_std_deg * 0.6, 5.0, 25.0)
-                )
+                self.dispersion_std_deg = float(np.clip(omega_std * 0.4 + self.dispersion_std_deg * 0.6, 5.0, 25.0))
+
+        mu_var = float(np.var(self._p_mu))
+        beta_var = float(np.var(self._p_beta))
+        self._calib_quality = float(np.clip(1.0 - (mu_var * 30.0 + beta_var * 600.0), 0.0, 1.0))
 
     def predict_distribution_37(self, bankroll: float) -> dict:
         if len(self.ball_hist) < 2:
@@ -387,63 +355,86 @@ class AdvancedPhysicsEngine:
                 "distribution": p_uniform,
                 "confidence": 0.0,
                 "entropy_bits": float(_MAX_ENTROPY_37),
+                "normalized_entropy": 1.0,
                 "edge": 0.0,
                 "top_numbers": [0],
                 "tilt_factor": 1.0,
                 "should_bet": False,
                 "bet_amount": 0.0,
                 "expected_profit_1h": 0.0,
+                "calib_quality": self._calib_quality,
+                "track_stability": self._last_track_stability,
+                "det_conf": self._last_det_conf,
+                "strong_signal": False,
             }
 
         theta0 = self.ball_hist[-1][1]
         omega_b = self._estimate_omega(self.ball_hist) or 0.0
-
         rotor_only = [(t, a) for t, a in self.rotor_hist if a is not None]
         omega_w = self._estimate_omega(rotor_only) or 0.0
 
         impact, _ = self._integrate(theta0, omega_b, omega_w)
-        probs = self._distribution_37(impact)
+        impact = self._maybe_residual_correction(impact, omega_b, omega_w)
 
-        # Shannon entropy confidence (information-theoretic)
-        confidence = self._entropy_confidence(probs)
+        probs = self._advanced_monte_carlo(impact) if (self.god_mode or self.monte_carlo_sims > 500) else self._distribution_37(impact)
+        probs = self._apply_wheel_bias(probs)
+
         entropy_bits = self._shannon_entropy(probs)
+        normalized_entropy = self._normalized_entropy(probs)
 
-        # Tilt detection
-        tilt_factor = self._detect_tilt_bias(probs)
+        self._detect_tilt_bias(probs)
 
-        # Edge: expected profit per unit bet, straight-up payout 35:1
         p_hit = float(np.max(probs))
-        edge = (p_hit - 1.0 / 37.0) * 35.0
+        edge = (p_hit - 1.0 / 37.0) * self.payout_neto - self.house_edge_adjust
 
-        # Fractional Kelly sizing (variance from particle spread)
+        # MEJORA GOD: fórmula multifactor de confianza
+        confidence = (
+            0.30 * self._last_det_conf
+            + 0.25 * self._last_track_stability
+            + 0.25 * (1.0 - normalized_entropy)
+            + 0.20 * self._calib_quality
+        )
+        confidence = float(np.clip(confidence, 0.0, 0.99))
+
         variance = max(0.05, float(np.var(probs) * 37.0))
-        kelly = bankroll * (edge / variance) * self.bankroll_fraction
+        kelly_full = max(0.0, edge / variance)
+        frac = float(np.clip(self.bankroll_fraction, self.kelly_fraction_min, self.kelly_fraction_max))
 
-        # Safe mode: if particle weight variance is high, cut kelly to 5%
-        particle_variance = float(np.var(self._p_mu * self._p_w))
-        safe_mode = particle_variance > (self.mu * 0.05) ** 2
-        kelly_factor = 0.05 if safe_mode else 1.0
+        recent_drawdown = 0.0
+        if len(self.ball_hist) >= 15:
+            angles = [a for _, a in self.ball_hist[-15:]]
+            recent_drawdown = float(np.clip(np.std(angles) / 180.0, 0.0, 1.0))
+        dd_guard = 1.0 - min(self.drawdown_guard, recent_drawdown)
 
-        bet = float(np.clip(kelly * kelly_factor, 0.0, bankroll * 0.2))
+        bet = float(np.clip(bankroll * kelly_full * frac * dd_guard, 0.0, bankroll * 0.2))
 
-        # Bet only when Shannon confidence > 0.82 and edge > threshold
-        should = (confidence > self.confidence_threshold) and (edge > self.edge_threshold)
+        strong_signal = edge > 0.15 and confidence > 0.78 and normalized_entropy < self.min_entropy_signal
+        should = strong_signal if (self.god_mode or self.hybrid_physics) else (confidence > self.confidence_threshold and edge > self.edge_threshold)
 
         idx_sorted = np.argsort(probs)[::-1]
         top_numbers = [self.cylinder.wheel[int(i)] for i in idx_sorted[:5]]
+
+        best_idx = int(idx_sorted[0])
+        self._wheel_bias_counts[best_idx] += 1.0
 
         expected_profit_1h = 22 * bet * edge
         return {
             "distribution": probs,
             "confidence": confidence,
             "entropy_bits": entropy_bits,
+            "normalized_entropy": normalized_entropy,
             "edge": float(edge),
             "top_numbers": top_numbers,
-            "tilt_factor": tilt_factor,
-            "safe_mode": safe_mode,
+            "tilt_factor": self.factor_tilt,
+            "safe_mode": recent_drawdown > 0.3,
             "should_bet": should,
             "bet_amount": bet if should else 0.0,
             "expected_profit_1h": expected_profit_1h,
+            "calib_quality": self._calib_quality,
+            "track_stability": self._last_track_stability,
+            "det_conf": self._last_det_conf,
+            "strong_signal": strong_signal,
+            "phase": self._last_phase,
         }
 
     def update_hyperparams_from_config(self, cfg: dict) -> None:
@@ -451,12 +442,20 @@ class AdvancedPhysicsEngine:
         self.beta = float(cfg.get("beta", self.beta))
         self.gamma = float(cfg.get("gamma", self.gamma))
         self.dispersion_std_deg = float(cfg.get("dispersion_std_deg", self.dispersion_std_deg))
-        # Re-centre SMC particles around configured priors
+
+        self.god_mode = bool(cfg.get("god_mode", self.god_mode))
+        self.hybrid_physics = bool(cfg.get("hybrid_physics", self.hybrid_physics or self.god_mode))
+        self.house_edge_adjust = float(cfg.get("house_edge_adjust", self.house_edge_adjust))
+        self.payout_neto = float(cfg.get("payout_neto", self.payout_neto))
+        self.monte_carlo_sims = int(cfg.get("monte_carlo_sims", self.monte_carlo_sims))
+        self.min_entropy_signal = float(cfg.get("min_entropy_signal", self.min_entropy_signal))
+        self.kelly_fraction_min = float(cfg.get("kelly_fraction_min", self.kelly_fraction_min))
+        self.kelly_fraction_max = float(cfg.get("kelly_fraction_max", self.kelly_fraction_max))
+        self.drawdown_guard = float(cfg.get("drawdown_guard", self.drawdown_guard))
+
         rng = np.random.default_rng()
-        self._p_mu = rng.normal(self.mu, self.mu * 0.15,
-                                self._N_PARTICLES).clip(0.003, 0.1)
-        self._p_beta = rng.normal(self.beta, self.beta * 0.15,
-                                  self._N_PARTICLES).clip(1e-5, 0.025)
+        self._p_mu = rng.normal(self.mu, self.mu * 0.15, self._N_PARTICLES).clip(0.003, 0.1)
+        self._p_beta = rng.normal(self.beta, self.beta * 0.15, self._N_PARTICLES).clip(1e-5, 0.025)
         self._p_w = np.ones(self._N_PARTICLES) / self._N_PARTICLES
 
     def export_calibration_state(self) -> dict:
@@ -468,12 +467,31 @@ class AdvancedPhysicsEngine:
             "smc_mu_std": float(np.std(self._p_mu)),
             "smc_beta_std": float(np.std(self._p_beta)),
             "updated_at": int(time.time()),
+            "calib_quality": self._calib_quality,
+            "wheel_bias_counts": self._wheel_bias_counts.tolist(),
         }
 
+    def train_hybrid_from_spins(self, spin_rows: list[dict]) -> dict:
+        if not (self._hybrid and self.hybrid_physics and ResidualTrainSample):
+            return {"trained": False, "reason": "hybrid physics no activo"}
+        samples = []
+        for row in spin_rows:
+            if "pred_angle" not in row or "real_angle" not in row:
+                continue
+            pred = float(row["pred_angle"])
+            real = float(row["real_angle"])
+            residual = self._delta(pred, real)
+            x = [
+                pred / 360.0,
+                float(row.get("omega_b", 0.0)) / 300.0,
+                float(row.get("omega_w", 0.0)) / 120.0,
+                self.mu,
+                self.beta * 1000.0,
+                self.factor_tilt,
+            ]
+            samples.append(ResidualTrainSample(x=x, y=residual))
+        return self._hybrid.train_from_spins(samples)
 
-# ---------------------------------------------------------------------------
-# Backward-compat alias used by some tests
-# ---------------------------------------------------------------------------
 
 class RoulettePhysicsEngine(AdvancedPhysicsEngine):
     def fit_friction(self, angle_history: list[tuple[float, float]]) -> None:
@@ -487,24 +505,21 @@ class RoulettePhysicsEngine(AdvancedPhysicsEngine):
             return
         self.dispersion_std_deg = float(np.clip(np.std(errors_deg), 5.0, 24.0))
 
-    def predict_drop(self, now_angle: float, now_omega: float,
-                     rotor_angle: float | None, rotor_omega: float | None):
+    def predict_drop(self, now_angle: float, now_omega: float, rotor_angle: float | None, rotor_omega: float | None):
         impact, _ = self._integrate(now_angle, now_omega, rotor_omega or 0.0)
         return impact, 1.0
 
     def sector_from_angle(self, angle: float, span_numbers: int = 10) -> list[int | str]:
         idx = int((angle / 360.0) * len(self.cylinder.wheel))
         h = span_numbers // 2
-        return [self.cylinder.wheel[(idx + i) % len(self.cylinder.wheel)]
-                for i in range(-h, h + 1)]
+        return [self.cylinder.wheel[(idx + i) % len(self.cylinder.wheel)] for i in range(-h, h + 1)]
 
     def confidence_and_span(self) -> tuple[float, int]:
         c = float(np.clip(1.0 - self.dispersion_std_deg / 40.0, 0.45, 0.95))
         span = int(np.clip(round(12 - c * 6), 8, 12))
         return c, span
 
-    def suggest_bet(self, bankroll: float, sector: list[int | str],
-                    confidence: float) -> BetSuggestion:
+    def suggest_bet(self, bankroll: float, sector: list[int | str], confidence: float) -> BetSuggestion:
         edge = max(0.0, confidence - 0.5)
         variance = max(0.2, 1.0 - confidence)
         amount = float(np.clip(bankroll * (edge / variance) * 0.5, 0.0, bankroll * 0.1))
