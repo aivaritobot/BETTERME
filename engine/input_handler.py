@@ -40,6 +40,7 @@ class InputHandler:
         self._screen_queue: queue.Queue = queue.Queue(maxsize=2)
         self._screen_thread: threading.Thread | None = None
         self._recent_centers: deque[tuple[int, int]] = deque(maxlen=self.anti_jitter_size)
+        self._recent_radii: deque[int] = deque(maxlen=self.anti_jitter_size)
         # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
         self._window_monitor = None
 
@@ -49,7 +50,7 @@ class InputHandler:
         if cv2 is None:
             return
 
-        if self.capture_mode == "screen":
+        if self.capture_mode in {"screen", "window"}:
             try:
                 import mss as _mss_mod
 
@@ -57,24 +58,12 @@ class InputHandler:
                 self._screen_running = True
                 self._screen_thread = threading.Thread(target=self._screen_loop, daemon=True)
                 self._screen_thread.start()
+                return
             except Exception:
                 self.capture_mode = "webcam"
 
-        if self.capture_mode == "window":
-            # Fallback seguro: captura de escritorio completo + auto-crop.
-            try:
-                import mss as _mss_mod
-
-                self._mss_instance = _mss_mod.mss()
-                self._screen_running = True
-                self._screen_thread = threading.Thread(target=self._screen_loop, daemon=True)
-                self._screen_thread.start()
-            except Exception:
-                self.capture_mode = "webcam"
-
-        if self.capture_mode in {"webcam", "rtsp"}:
-            src = int(self.source) if str(self.source).isdigit() else self.source
-            self.cap = cv2.VideoCapture(src)
+        src = int(self.source) if str(self.source).isdigit() else self.source
+        self.cap = cv2.VideoCapture(src)
 
     # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
     def close(self) -> None:
@@ -112,8 +101,8 @@ class InputHandler:
         cv2 = _load_cv2()
         if cv2 is None or self._mss_instance is None:
             return
-        monitor = self._resolve_monitor()
         while self._screen_running:
+            monitor = self._resolve_monitor()
             try:
                 raw = np.array(self._mss_instance.grab(monitor))
                 frame = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
@@ -170,19 +159,49 @@ class InputHandler:
             return False, None, time.time()
 
     # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _detect_wheel_circle(self, frame: np.ndarray) -> tuple[int, int, int] | None:
+        cv2 = _load_cv2()
+        if cv2 is None or frame is None:
+            return None
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.medianBlur(gray, 5)
+        circles = cv2.HoughCircles(
+            gray,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=max(80, min(h, w) // 5),
+            param1=130,
+            param2=28,
+            minRadius=max(35, min(h, w) // 8),
+            maxRadius=max(80, int(min(h, w) * 0.48)),
+        )
+        if circles is None:
+            return None
+        x, y, r = circles[0][0]
+        return int(x), int(y), int(r)
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
     def _apply_auto_crop(self, frame: np.ndarray) -> np.ndarray:
         if not self.auto_crop or frame is None:
             return frame
         h, w = frame.shape[:2]
-        cx, cy = w // 2, h // 2
+
+        circle = self._detect_wheel_circle(frame)
+        if circle is not None:
+            cx, cy, rr = circle
+            self._recent_centers.append((cx, cy))
+            self._recent_radii.append(rr)
 
         if self._recent_centers:
-            mean_x = int(np.mean([c[0] for c in self._recent_centers]))
-            mean_y = int(np.mean([c[1] for c in self._recent_centers]))
-            cx, cy = mean_x, mean_y
+            cx = int(np.mean([c[0] for c in self._recent_centers]))
+            cy = int(np.mean([c[1] for c in self._recent_centers]))
+            radius = int(np.mean(self._recent_radii)) if self._recent_radii else int(min(w, h) * 0.4)
+            crop_size = int(np.clip(radius * 2.25, min(w, h) * 0.55, min(w, h) * 0.95))
+        else:
+            cx, cy = w // 2, h // 2
+            crop_size = int(min(w, h) * 0.88)
 
-        self._recent_centers.append((cx, cy))
-        crop_size = int(min(w, h) * 0.88)
         x1 = max(0, cx - crop_size // 2)
         y1 = max(0, cy - crop_size // 2)
         x2 = min(w, x1 + crop_size)

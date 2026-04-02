@@ -204,6 +204,10 @@ class RouletteVision:
         # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
         self._tensorrt_ready = False
         self._frame_time_hist: deque[float] = deque(maxlen=30)
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        self._camera_signature = None
+        self._camera_change_cooldown = 0
+        self._ball_reid_buffer: deque[tuple[int, int]] = deque(maxlen=20)
 
     @staticmethod
     def _extract_token(raw_text: str) -> str | None:
@@ -375,6 +379,47 @@ class RouletteVision:
         high = cv2.addWeighted(sharpen, 1.0 + deblur_gain, cv2.GaussianBlur(sharpen, (0, 0), 2.0), -deblur_gain, 0)
         return high
 
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _mask_online_overlays(self, frame: np.ndarray) -> np.ndarray:
+        if not self.online_mode:
+            return frame
+        cv2 = _load_cv2()
+        if cv2 is None or frame is None:
+            return frame
+        h, w = frame.shape[:2]
+        masked = frame.copy()
+        # En streams de casino son comunes banners superiores/inferiores y scorebugs laterales
+        top_h = max(18, int(h * 0.09))
+        bottom_h = max(18, int(h * 0.10))
+        side_w = max(8, int(w * 0.04))
+        masked[:top_h, :] = 0
+        masked[h - bottom_h :, :] = 0
+        masked[:, :side_w] = 0
+        masked[:, w - side_w :] = 0
+        return masked
+
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    def _detect_camera_change(self, frame: np.ndarray) -> bool:
+        if not self.online_mode:
+            return False
+        cv2 = _load_cv2()
+        if cv2 is None:
+            return False
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        entropy = float(np.std(gray))
+        hist = cv2.calcHist([gray], [0], None, [32], [0, 256]).flatten()
+        hist = hist / max(1.0, float(hist.sum()))
+        signature = (entropy, hist)
+        if self._camera_signature is None:
+            self._camera_signature = signature
+            return False
+        prev_entropy, prev_hist = self._camera_signature
+        hist_delta = float(np.linalg.norm(hist - prev_hist))
+        entropy_delta = abs(entropy - prev_entropy)
+        changed = hist_delta > 0.23 or entropy_delta > 18.0
+        self._camera_signature = signature
+        return changed
+
     def _read_screen_frame(self):
         if not self._screen_running:
             self.open()
@@ -463,6 +508,13 @@ class RouletteVision:
             return self._last_detection
 
         # MEJORA GOD: fallback híbrido YOLO+clásico+flow si confidence es baja
+        if ball is None and self._ball_reid_buffer:
+            # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+            bx = int(np.median([p[0] for p in self._ball_reid_buffer]))
+            by = int(np.median([p[1] for p in self._ball_reid_buffer]))
+            ball = (bx, by)
+            det_conf = max(det_conf, 0.42)
+
         if ball is None or (self.hybrid_detection and det_conf < self.yolo_conf_threshold):
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             bright = cv2.inRange(hsv, (0, 0, 220), (180, 65, 255))
@@ -493,6 +545,8 @@ class RouletteVision:
             except Exception:
                 pass
 
+        if ball is not None:
+            self._ball_reid_buffer.append(ball)
         out = (ball, marker, float(np.clip(det_conf, 0.0, 1.0)))
         self._last_detection = out
         dynamic_skip = self._dynamic_skip_frames()
@@ -584,12 +638,22 @@ class RouletteVision:
 
         # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
         frame = self._enhance_frame(frame)
+        frame = self._mask_online_overlays(frame)
+
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self._detect_camera_change(frame):
+            self._homography = None
+            self.wheel_center = None
+            self.wheel_radius = None
+            self._camera_change_cooldown = 6
 
         self.frame_idx += 1
         if self.wheel_center is None or (self.frame_idx % self.wheel_detect_interval == 0):
             self._detect_wheel_hough(frame)
             if self.wheel_center is not None and self._homography is None:
                 self._homography_auto(frame)
+        if self._camera_change_cooldown > 0:
+            self._camera_change_cooldown -= 1
 
         ball_raw, marker_raw, det_conf = self._detect_objects(frame)
 

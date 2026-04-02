@@ -192,6 +192,9 @@ class AdvancedPhysicsEngine:
             return
 
         recent = self.ball_hist[-8:]
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if self.online_mode and self._last_phase == "dropping":
+            recent = self.ball_hist[-12:]
         alphas, omegas = [], []
         for i in range(1, len(recent) - 1):
             t0, a0 = recent[i - 1]
@@ -292,7 +295,7 @@ class AdvancedPhysicsEngine:
 
     # === GOD SINGLE NUMBER MODE - AÑADIDO ===
     def is_dropping_phase(self) -> bool:
-        return self._last_phase in {"drop", "impact", "descending", "pre_drop"}
+        return self._last_phase in {"drop", "impact", "descending", "pre_drop", "dropping"}
 
     # === GOD SINGLE NUMBER MODE - AÑADIDO ===
     @staticmethod
@@ -345,11 +348,13 @@ class AdvancedPhysicsEngine:
         max_prob = float(sorted_probs[0][1])
         entropy = float(self.calculate_shannon_entropy(probabilities))
 
+        current_edge = self.calculate_edge(max_prob, payout_neto=self.payout_neto, house_edge_adjust=self.house_edge_adjust)
         is_god_signal = (
             base_confidence > float(self.config.get("god_single_threshold", self.god_single_threshold))
             and max_prob >= float(self.config.get("min_max_prob", self.min_max_prob))
             and entropy <= float(self.config.get("max_entropy", self.max_entropy))
             and self.is_dropping_phase()
+            and current_edge > 0.18
             and bool(self.config.get("god_mode", self.god_mode))
         )
 
@@ -519,7 +524,8 @@ class AdvancedPhysicsEngine:
                 confidence > 0.90
                 and float(np.max(probs)) > 0.185
                 and entropy_bits < 2.55
-                and edge > 0.0
+                and self.is_dropping_phase()
+                and edge > 0.18
             )
         should = strong_signal if (self.god_mode or self.hybrid_physics) else (confidence > self.confidence_threshold and edge > self.edge_threshold)
         # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
@@ -605,6 +611,7 @@ class AdvancedPhysicsEngine:
             self.god_single_threshold = max(self.god_single_threshold, 0.90)
             self.min_max_prob = max(self.min_max_prob, 0.185)
             self.max_entropy = min(self.max_entropy, 2.55)
+            self.edge_threshold = max(self.edge_threshold, 0.18)
 
         rng = np.random.default_rng()
         self._p_mu = rng.normal(self.mu, self.mu * 0.15, self._N_PARTICLES).clip(0.003, 0.1)

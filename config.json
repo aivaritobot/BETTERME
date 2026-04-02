@@ -1,7 +1,7 @@
 {
   "legal_disclaimer": "EXPERIMENTAL. Solo investigación. Ilegal en la mayoría de casinos. Riesgo total de pérdida.",
   "wheel_mode": "European",
-  "yolo_model": "yolov11n.pt",
+  "yolo_model": "yolov11n",
   "telegram_token": "",
   "telegram_chat_id": "",
   "mu": 0.015,
@@ -29,13 +29,14 @@
   "min_entropy_signal": 0.35,
   "kelly_fraction_min": 0.25,
   "kelly_fraction_max": 0.5,
-  "drawdown_guard": 0.2
-  ,
+  "drawdown_guard": 0.2,
   "online_mode": false,
   "capture_mode": "webcam",
   "window_title": "",
   "backend": "cpu",
   "enhance_image": false,
   "enhance_level": "medium",
-  "skip_frames": 0
+  "skip_frames": 0,
+  "stop_loss": 0.35,
+  "auto_pause_seconds": 25
 }
