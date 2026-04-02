@@ -127,6 +127,43 @@ python run_demo.py --mode video --video-path demo.mp4 --roi-manual 0,0,800,800 -
 
 - `q` o `ESC`: salir.
 
+
+## Auditoría reproducible
+
+```bash
+python tools/run_audit.py
+```
+
+Genera validación automática de sintaxis, tests, help CLI y smoke E2E en modo video.
+
+## Tests básicos
+
+```bash
+pytest -q
+```
+
+## Limitaciones pendientes
+
+- La detección depende de iluminación/compresión/calidad del stream.
+- El componente de deflectores es heurístico y requiere ajuste por rueda/dealer para mejorar calibración.
+- Ningún sistema de visión 2D garantiza precisión universal en todas las mesas y condiciones de streaming.
+
+### 3) Demo con overlay + logs
+
+```bash
+python main.py --source video --video-path demo.mp4 --roi-manual 0,0,800,800 --log-level INFO --overlay
+```
+
+## Script de arranque simple
+
+```bash
+python run_demo.py --mode video --video-path demo.mp4 --roi-manual 0,0,800,800 --overlay
+```
+
+## Teclas
+
+- `q` o `ESC`: salir.
+
 ## Tests básicos
 
 ```bash

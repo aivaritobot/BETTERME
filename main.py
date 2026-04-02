@@ -105,6 +105,16 @@ def run(args: argparse.Namespace) -> int:
                 logger.info(
                     'frame=%d ball=%s rotor=%s pred=%s conf=%s',
 
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord('q'), 27):
+                    logger.info('Salida solicitada por usuario.')
+                    break
+
+            now = time.time()
+            if now - last_log > 1.5:
+                logger.info(
+                    'frame=%d ball=%s rotor=%s pred=%s conf=%s',
+
             brain.update(ball_angle, rotor_angle)
             pred = brain.get_prediction()
             relative_prediction = None
@@ -124,6 +134,22 @@ def run(args: argparse.Namespace) -> int:
                     f'{pred.confidence:.2f}' if pred is not None else 'None',
                 )
                 last_log = now
+
+            frame_count += 1
+            if args.max_frames > 0 and frame_count >= args.max_frames:
+                logger.info('max_frames alcanzado: %d', args.max_frames)
+                break
+    finally:
+        vision.close()
+        if args.overlay and cv2 is not None:
+            cv2.destroyAllWindows()
+
+    return 0
+
+
+if __name__ == '__main__':
+    cli = build_parser().parse_args()
+    raise SystemExit(run(cli))
 
             frame_count += 1
             if args.max_frames > 0 and frame_count >= args.max_frames:

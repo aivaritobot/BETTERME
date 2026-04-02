@@ -20,3 +20,11 @@
 ### Física (upgrade)
 - Se reemplazó el predictor cinemático básico por un modelo con fricción lineal + Coulomb, integración temporal y tiempo de caída.
 - Se añadió predicción de impacto, dispersión heurística por deflectores y puntaje de confianza.
+
+### Runtime/entorno
+- Se desacopló la carga de OpenCV/overlay del import de `main.py`; ahora `python main.py --help` funciona sin backend GUI.
+- `requirements.txt` migra a `opencv-python-headless` para evitar dependencia obligatoria de `libGL.so.1` en entornos headless.
+
+### Auditoría y verificación
+- Se añadió `tools/run_audit.py` para validar sintaxis, tests, help CLI y smoke E2E reproducible.
+- Se añadió `AUDIT_REPORT.md` con evidencias de ejecución y estado actual.
