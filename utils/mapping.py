@@ -1,3 +1,4 @@
+from __future__ import annotations
 import numpy as np
 
 # Orden oficial del cilindro Europeo
@@ -11,6 +12,7 @@ SECTORS = {
 }
 
 
+def get_alexbot_sector(angle: float):
 def get_alexbot_sector(angle):
     angle = angle % 360
     for name, data in SECTORS.items():
@@ -24,6 +26,7 @@ def get_alexbot_sector(angle):
     return 'ALEXBOT ANALIZANDO...', []
 
 
+def get_relative_prediction_angle(ball_pred: float | None, rotor_pred: float | None):
 def get_relative_prediction_angle(ball_pred, rotor_pred):
     """Ángulo relativo bola-vs-rotor; usa solo bola si no hay rotor."""
     if ball_pred is None:
