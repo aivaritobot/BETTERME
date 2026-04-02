@@ -1,6 +1,9 @@
 numpy==1.26.0
-python-dotenv==1.0.0
 opencv-python
+scipy
+ultralytics
+pyttsx3
+python-dotenv==1.0.0
 mss
 pyautogui
 pytesseract

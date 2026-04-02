@@ -1,76 +1,114 @@
 from __future__ import annotations
 
 import importlib
+import math
 import re
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
-
-try:
-    import pyautogui
-except Exception:  # pragma: no cover
-    pyautogui = None  # type: ignore
-
-try:
-    import pytesseract
-except Exception:  # pragma: no cover
-    pytesseract = None  # type: ignore
 
 
 def _load_cv2():
     try:
-        return importlib.import_module('cv2')
+        return importlib.import_module("cv2")
     except Exception:  # pragma: no cover
         return None
-except Exception:  # pragma: no cover - depende de entorno gráfico
-    pyautogui = None  # type: ignore
+
 
 try:
-    import pytesseract
-except Exception:  # pragma: no cover - depende de instalación local
-    pytesseract = None  # type: ignore
+    from ultralytics import YOLO
+except Exception:  # pragma: no cover
+    YOLO = None  # type: ignore
+
+
+@dataclass
+class VisionState:
+    frame: np.ndarray | None
+    timestamp: float
+    wheel_center: tuple[int, int] | None
+    wheel_radius: int | None
+    ball_center: tuple[int, int] | None
+    marker_center: tuple[int, int] | None
+    ball_angle: float | None
+    rotor_angle: float | None
+
+
+class _Kalman2D:
+    def __init__(self):
+        cv2 = _load_cv2()
+        self.filter = None
+        if cv2 is not None:
+            kf = cv2.KalmanFilter(4, 2)
+            kf.transitionMatrix = np.array(
+                [[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]],
+                np.float32,
+            )
+            kf.measurementMatrix = np.array(
+                [[1, 0, 0, 0], [0, 1, 0, 0]],
+                np.float32,
+            )
+            kf.processNoiseCov = np.eye(4, dtype=np.float32) * 1e-2
+            kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 2e-1
+            self.filter = kf
+
+    def update(self, point: tuple[int, int] | None) -> tuple[int, int] | None:
+        if self.filter is None:
+            return point
+
+        pred = self.filter.predict()
+        out = (int(pred[0]), int(pred[1]))
+        if point is not None:
+            m = np.array([[np.float32(point[0])], [np.float32(point[1])]])
+            corr = self.filter.correct(m)
+            out = (int(corr[0]), int(corr[1]))
+        return out
+
 
 class RouletteVision:
-    """OCR de mesa con auto-detección EU/USA y filtro temporal de estabilidad."""
+    """Visión en vivo: webcam/RTSP + auto rueda (Hough) + detector YOLO opcional."""
 
     def __init__(
         self,
-        region: tuple[int, int, int, int] = (0, 0, 300, 300),
+        source: str = "0",
+        model_path: str | None = None,
+        wheel_detect_interval: int = 10,
         stable_ms: int = 500,
         min_stable_samples: int = 3,
     ):
-        self.region = region
-        self.mode = 'European'
+        self.source = self._parse_source(source)
+        self.cap = None
+        self.model = YOLO(model_path) if (YOLO is not None and model_path) else None
+        self.mode = "European"
+        self.wheel_detect_interval = wheel_detect_interval
+        self.frame_idx = 0
+        self.wheel_center: tuple[int, int] | None = None
+        self.wheel_radius: int | None = None
+
+        self.ball_filter = _Kalman2D()
+        self.marker_filter = _Kalman2D()
+        self.last_detected: int | None = None
+        self._token_buffer: deque[tuple[float, str]] = deque(maxlen=10)
         self.stable_ms = stable_ms
         self.min_stable_samples = min_stable_samples
-        self._token_buffer: deque[tuple[float, str]] = deque(maxlen=10)
-        self.last_detected: int | None = None
 
-    def _grab_frame(self) -> np.ndarray | None:
-        if pyautogui is None:  # pragma: no cover
-            return None
-        screenshot = pyautogui.screenshot(region=self.region)
-        frame = np.array(screenshot)
-        cv2 = _load_cv2()
-        if cv2 is None:
-            return frame[:, :, ::-1].copy()
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    @staticmethod
+    def _parse_source(value: str):
+        return int(value) if value.isdigit() else value
 
     @staticmethod
     def _extract_token(raw_text: str) -> str | None:
         text = raw_text.strip()
-        if '00' in text:
-            return '00'
-        match = re.search(r'\b([0-9]|[1-2][0-9]|3[0-6])\b', text)
-        if not match:
-            return None
-        return match.group(1)
+        if "00" in text:
+            return "00"
+        match = re.search(r"\b([0-9]|[1-2][0-9]|3[0-6])\b", text)
+        return match.group(1) if match else None
 
     @classmethod
     def _extract_number(cls, raw_text: str) -> int | None:
         token = cls._extract_token(raw_text)
-        if token is None or token == '00':
+        if token is None or token == "00":
             return None
         value = int(token)
         return value if 0 <= value <= 36 else None
@@ -89,146 +127,124 @@ class RouletteVision:
             return None
 
         oldest_ts = trailing[-1][0]
-        stable_for = now - oldest_ts
-        if stable_for >= self.stable_ms / 1000:
-            return token
-        return None
+        return token if (now - oldest_ts) >= self.stable_ms / 1000 else None
 
-    def scan(self) -> tuple[int | None, np.ndarray | None]:
-        frame = self._grab_frame()
+    def open(self) -> None:
         cv2 = _load_cv2()
-        if frame is None or pytesseract is None or cv2 is None:  # pragma: no cover
-            return None, frame
+        if cv2 is None:  # pragma: no cover
+            return
+        self.cap = cv2.VideoCapture(self.source)
 
+    def close(self) -> None:
+        if self.cap is not None:
+            self.cap.release()
+
+    def _detect_wheel(self, frame: np.ndarray) -> None:
+        cv2 = _load_cv2()
+        if cv2 is None:  # pragma: no cover
+            return
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.medianBlur(gray, 5)
-        thresh = cv2.adaptiveThreshold(
+        gray = cv2.GaussianBlur(gray, (9, 9), 2)
+        circles = cv2.HoughCircles(
             gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            31,
-            5,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=max(40, min(frame.shape[:2]) // 3),
+            param1=120,
+            param2=30,
+            minRadius=max(40, min(frame.shape[:2]) // 8),
+            maxRadius=max(60, min(frame.shape[:2]) // 2),
         )
-        text = pytesseract.image_to_string(
-            thresh,
-            config='--psm 6 -c tessedit_char_whitelist=0123456789',
-        )
+        if circles is not None:
+            x, y, r = circles[0][0]
+            self.wheel_center = (int(x), int(y))
+            self.wheel_radius = int(r)
 
-        token = self._extract_token(text)
-        if token is None:
-            return None, frame
-
-        stable_token = self._promote_stable_token(token)
-        if stable_token is None:
-            return None, frame
-
-        if stable_token == '00':
-            self.mode = 'American'
-            return None, frame
-
-        number = int(stable_token)
-        if number == self.last_detected:
-            return None, frame
-
-        self.last_detected = number
-        return number, frame
-
-    def get_last_number(self) -> int | None:
-        number, _ = self.scan()
-        return number
-
-    def is_betting_open(
-        self,
-        sample_point: tuple[int, int] = (5, 5),
-        red_threshold: int = 170,
-        green_threshold: int = 150,
-    ) -> bool | None:
-        frame = self._grab_frame()
-        if frame is None:
-            return None
-
-def _load_cv2():
-    try:
-        return importlib.import_module('cv2')
-    except Exception:  # pragma: no cover
-        return None
-
-
-class RouletteVision:
-    """Módulo OCR para detectar el último número en una ROI de pantalla."""
-
-    def __init__(self, region: tuple[int, int, int, int] = (0, 0, 300, 300)):
-        self.region = region
-        self.last_detected: int | None = None
-
-    def _grab_frame(self) -> np.ndarray | None:
-        if pyautogui is None:  # pragma: no cover - requiere GUI real
-            return None
-
-        screenshot = pyautogui.screenshot(region=self.region)
-        frame = np.array(screenshot)
-
+    def _detect_objects_fallback(self, frame: np.ndarray) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
         cv2 = _load_cv2()
         if cv2 is None:
-            return frame[:, :, ::-1].copy()
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            return None, None
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # bola: puntos muy brillantes
+        bright = cv2.inRange(hsv, (0, 0, 220), (180, 70, 255))
+        cnts, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        ball = None
+        if cnts:
+            c = max(cnts, key=cv2.contourArea)
+            (x, y), _ = cv2.minEnclosingCircle(c)
+            ball = (int(x), int(y))
+
+        # marcador rotor: verde
+        green = cv2.inRange(hsv, (35, 60, 60), (90, 255, 255))
+        cnts2, _ = cv2.findContours(green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        marker = None
+        if cnts2:
+            c2 = max(cnts2, key=cv2.contourArea)
+            (mx, my), _ = cv2.minEnclosingCircle(c2)
+            marker = (int(mx), int(my))
+
+        return ball, marker
+
+    def _detect_objects(self, frame: np.ndarray) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+        if self.model is not None:
+            try:
+                result = self.model.predict(frame, verbose=False, conf=0.3)[0]
+                ball, marker = None, None
+                for box, cls_idx in zip(result.boxes.xyxy, result.boxes.cls):
+                    x1, y1, x2, y2 = [int(v) for v in box.tolist()]
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
+                    cls_name = self.model.names[int(cls_idx)]
+                    if cls_name.lower() in {"ball", "bola"}:
+                        ball = (cx, cy)
+                    elif cls_name.lower() in {"marker", "rotor_marker", "marcador"}:
+                        marker = (cx, cy)
+                if ball is not None or marker is not None:
+                    return ball, marker
+            except Exception:
+                pass
+        return self._detect_objects_fallback(frame)
 
     @staticmethod
-    def _extract_number(raw_text: str) -> int | None:
-        match = re.search(r"\d+", raw_text)
-        if not match:
+    def _angle_from_center(center: tuple[int, int] | None, point: tuple[int, int] | None) -> float | None:
+        if center is None or point is None:
             return None
+        dx = point[0] - center[0]
+        dy = point[1] - center[1]
+        return math.degrees(math.atan2(-dy, dx)) % 360
 
-        value = int(match.group())
-        if 0 <= value <= 36:
-            return value
-        return None
-
-    def get_last_number(self) -> int | None:
-        """Captura ROI, aplica OCR y devuelve un nuevo número válido 0-36."""
-        frame = self._grab_frame()
+    def read_state(self) -> VisionState | None:
         cv2 = _load_cv2()
-        if frame is None or pytesseract is None or cv2 is None:  # pragma: no cover
+        if cv2 is None:  # pragma: no cover
+            return None
+        if self.cap is None:
+            self.open()
+        if self.cap is None:
             return None
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+        ok, frame = self.cap.read()
+        if not ok:
+            return None
 
-        text = pytesseract.image_to_string(
-            thresh,
-            config='--psm 6 -c tessedit_char_whitelist=0123456789',
+        self.frame_idx += 1
+        if self.wheel_center is None or (self.frame_idx % self.wheel_detect_interval == 0):
+            self._detect_wheel(frame)
+
+        ball_raw, marker_raw = self._detect_objects(frame)
+        ball = self.ball_filter.update(ball_raw)
+        marker = self.marker_filter.update(marker_raw)
+
+        return VisionState(
+            frame=frame,
+            timestamp=time.time(),
+            wheel_center=self.wheel_center,
+            wheel_radius=self.wheel_radius,
+            ball_center=ball,
+            marker_center=marker,
+            ball_angle=self._angle_from_center(self.wheel_center, ball),
+            rotor_angle=self._angle_from_center(self.wheel_center, marker),
         )
-
-        num = self._extract_number(text.strip())
-        if num is None or num == self.last_detected:
-            return None
-
-        self.last_detected = num
-        return num
-
-    def is_betting_open(
-        self,
-        sample_point: tuple[int, int] = (5, 5),
-        red_threshold: int = 170,
-        green_threshold: int = 150,
-    ) -> bool | None:
-        frame = self._grab_frame()
-        if frame is None:
-            return None
-
-        x, y = sample_point
-        h, w = frame.shape[:2]
-        if not (0 <= x < w and 0 <= y < h):
-            return None
-
-        _, g, r = frame[y, x]
-        b, g, r = frame[y, x]
-        if r >= red_threshold and r > g:
-            return False
-        if g >= green_threshold and g > r:
-            return True
-        return None
 
 
 AlexBotVision = RouletteVision
