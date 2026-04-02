@@ -12,6 +12,7 @@ def demo_parser() -> argparse.ArgumentParser:
     parser.add_argument('--roi-manual', default='0,0,800,800')
     parser.add_argument('--log-level', default='INFO')
     parser.add_argument('--max-frames', type=int, default=0)
+    parser.add_argument('--overlay', action='store_true', default=False)
     return parser
 
 
@@ -24,6 +25,7 @@ def main() -> int:
     cli.roi_manual = args.roi_manual
     cli.log_level = args.log_level
     cli.max_frames = args.max_frames
+    cli.overlay = args.overlay
     cli.config = 'config.json'
     return run(cli)
 
