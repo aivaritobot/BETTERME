@@ -153,7 +153,7 @@ python main.py --yolo-model runs/detect/train/weights/best.pt --god-mode
 
 Para latencia baja y FPS altos, exporta YOLO a ONNX/TensorRT y usa resolución ajustada al ROI de rueda.
 
-## MÁXIMO NIVEL ONLINE SETUP
+## MÁXIMO NIVEL ONLINE SETUP (2026)
 
 > Todas estas mejoras son **opt-in** y no alteran el comportamiento legacy si no se activan.
 
@@ -212,3 +212,12 @@ streamlit run dashboard.py
 ```
 
 Muestra métricas de confianza, edge y drawdown estimado desde `audit_log.csv`.
+
+
+### Tips para cambios de cámara, overlays y compresión
+
+- Activa `--online-mode --enhance-image --enhance-level medium` como baseline para streams con bitrate variable.
+- Si hay *camera cuts* frecuentes, usa `--hybrid-detection` para mantener continuidad con optical flow y re-identificación de bola.
+- Si el casino inyecta letras/banners (arriba/abajo), el pipeline online aplica máscara automática de overlays antes de detección.
+- Para feeds muy comprimidos (macroblocks), baja resolución de entrada en OBS y sube contraste local (CLAHE) con `--enhance-level high`.
+- Mantén `--backend onnx` o `--backend tensorrt` cuando el modelo esté exportado para sostener FPS altos en live streams.

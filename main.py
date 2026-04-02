@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="BETTERME BESTIA (experimental): investigación de dinámica de ruleta con visión + física + auditoría"
     )
     parser.add_argument("--source", default="0", help="0 webcam, screen, archivo de video o RTSP")
-    parser.add_argument("--yolo-model", default="yolov11n.pt", help="Modelo YOLO para tracking")
+    parser.add_argument("--yolo-model", default="yolov11n", help="Modelo YOLO para tracking")
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--bankroll", type=float, default=100.0)
     parser.add_argument("--audit-only", action="store_true", help="No muestra overlay en vivo; solo logging")
@@ -118,11 +118,18 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
         cfg_runtime["min_max_prob"] = max(float(cfg_runtime.get("min_max_prob", 0.175)), 0.185)
         cfg_runtime["max_entropy"] = min(float(cfg_runtime.get("max_entropy", 2.8)), 2.55)
     cfg_runtime["drawdown_guard"] = float(cfg_runtime.get("drawdown_guard", 0.2))
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    cfg_runtime["stop_loss"] = float(cfg_runtime.get("stop_loss", 0.35))
+    cfg_runtime["auto_pause_seconds"] = int(cfg_runtime.get("auto_pause_seconds", 25))
 
     physics.update_hyperparams_from_config(cfg_runtime)
 
     frame_count = 0
     spin_log: list[dict] = []
+    # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+    initial_bankroll = float(args.bankroll)
+    runtime_bankroll = float(args.bankroll)
+    pause_until = 0.0
 
     while not stop_event.is_set():
         state = vision.read_state()
@@ -132,6 +139,9 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
         frame_count += 1
         if args.max_frames and frame_count > args.max_frames:
             break
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if time.time() < pause_until:
+            continue
         if state.ball_angle is None:
             continue
 
@@ -144,7 +154,7 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
             phase=state.phase,
             angular_kappa=state.angular_kappa,
         )
-        pred = physics.predict_distribution_37(bankroll=args.bankroll)
+        pred = physics.predict_distribution_37(bankroll=runtime_bankroll)
 
         if not args.audit_only:
             render_stealth_overlay(
@@ -177,6 +187,16 @@ def _spin_worker(stop_event: threading.Event, args: argparse.Namespace) -> None:
             "strong_signal": pred.get("strong_signal", False),
         }
         spin_log.append(row)
+
+        # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
+        if pred.get("should_bet", False):
+            runtime_bankroll = max(0.0, runtime_bankroll - float(pred.get("bet_amount", 0.0)))
+            runtime_bankroll += max(0.0, float(pred.get("expected_profit_1h", 0.0))) / 22.0
+        drawdown = 0.0 if initial_bankroll <= 0 else max(0.0, (initial_bankroll - runtime_bankroll) / initial_bankroll)
+        row["runtime_bankroll"] = runtime_bankroll
+        row["drawdown"] = drawdown
+        if args.online_mode and drawdown >= float(cfg_runtime.get("stop_loss", 0.35)):
+            pause_until = time.time() + int(cfg_runtime.get("auto_pause_seconds", 25))
 
         if args.voice and pred["should_bet"]:
             announce_text(f"Señal experimental. Top: {pred['top_numbers'][0]}")
