@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Callable
 
 from app.error_handler import to_user_error
 from app.models import AppStatus, CaptureROI, RuntimeSettings
+from engine.dual_path import ExecutionLoadBalancer, FastPixelTracker, number_to_sector
+from engine.interaction import TargetActionManager
 from engine.physics import AdvancedPhysicsEngine
 from engine.vision import RouletteVision
 from ui.overlay import announce_text
@@ -70,6 +73,7 @@ class SessionController:
     def _loop(self) -> None:
         vision: RouletteVision | None = None
         physics: AdvancedPhysicsEngine | None = None
+        reactive_tracker: FastPixelTracker | None = None
         config_data: dict = {}
         try:
             config_data = self._load_engine_config()
@@ -98,6 +102,16 @@ class SessionController:
             )
             physics = AdvancedPhysicsEngine()
             physics.update_hyperparams_from_config(config_data)
+            reactive_tracker = FastPixelTracker(
+                sector_count=int(config_data.get("sector_count", 8)),
+                sector_span_deg=float(config_data.get("sector_span_deg", 45.0)),
+                friction=float(config_data.get("reactive_friction", 0.975)),
+            )
+            load_balancer = ExecutionLoadBalancer(weight=int(self._settings.execution_weight))
+            action_manager = TargetActionManager(
+                enabled=bool(config_data.get("enable_target_action", False)),
+                jitter_px=(2, 3),
+            )
 
             self.status = AppStatus.CAPTURING
             self.emit("status", {"status": self.status.value, "message": "Capturando..."})
@@ -116,25 +130,63 @@ class SessionController:
                     continue
 
                 frame_count += 1
-                physics.observe(
-                    timestamp=state.timestamp,
-                    ball_angle=state.ball_angle,
-                    rotor_angle=state.rotor_angle,
-                    det_confidence=state.det_confidence,
-                    track_stability=state.track_stability,
-                    phase=state.phase,
-                    angular_kappa=state.angular_kappa,
-                )
-                pred = physics.predict_distribution_37(bankroll=self._settings.bankroll)
-                payload = {
-                    "confidence": float(pred.get("confidence", 0.0)),
-                    "entropy_bits": float(pred.get("entropy_bits", 0.0)),
-                    "edge": float(pred.get("edge", 0.0)),
-                    "top_numbers": pred.get("top_numbers", []),
-                    "bet_amount": float(pred.get("bet_amount", 0.0)),
-                    "expected_profit_1h": float(pred.get("expected_profit_1h", 0.0)),
-                    "should_bet": bool(pred.get("should_bet", False)),
-                }
+                if not load_balancer.should_process(frame_count):
+                    continue
+
+                sector_count = max(1, int(config_data.get("sector_count", 8)))
+                sector_coords = self._resolve_sector_coordinates(config_data, state.wheel_center, state.wheel_radius, sector_count)
+                payload: dict[str, object] = {}
+
+                if self._settings.inference_mode == "reactive" and reactive_tracker is not None:
+                    fast_pred = reactive_tracker.process(state, iterations=load_balancer.analysis_iterations())
+                    if fast_pred is None:
+                        continue
+                    payload = {
+                        "mode": "reactive",
+                        "confidence": float(fast_pred.confidence),
+                        "entropy_bits": 0.0,
+                        "edge": 0.0,
+                        "top_numbers": [int(fast_pred.sector_index)],
+                        "bet_amount": 0.0,
+                        "expected_profit_1h": 0.0,
+                        "should_bet": False,
+                        "predicted_sector": int(fast_pred.sector_index),
+                        "latency_ms": float(fast_pred.latency_ms),
+                    }
+                    action_event = action_manager.simulate_selection(sector_coords, fast_pred.sector_index)
+                else:
+                    payload["mode"] = "analytic"
+                    payload["latency_ms"] = 0.0
+                    physics.observe(
+                        timestamp=state.timestamp,
+                        ball_angle=state.ball_angle,
+                        rotor_angle=state.rotor_angle,
+                        det_confidence=state.det_confidence,
+                        track_stability=state.track_stability,
+                        phase=state.phase,
+                        angular_kappa=state.angular_kappa,
+                    )
+                    pred = physics.predict_distribution_37(bankroll=self._settings.bankroll)
+                    payload.update(
+                        {
+                            "confidence": float(pred.get("confidence", 0.0)),
+                            "entropy_bits": float(pred.get("entropy_bits", 0.0)),
+                            "edge": float(pred.get("edge", 0.0)),
+                            "top_numbers": pred.get("top_numbers", []),
+                            "bet_amount": float(pred.get("bet_amount", 0.0)),
+                            "expected_profit_1h": float(pred.get("expected_profit_1h", 0.0)),
+                            "should_bet": bool(pred.get("should_bet", False)),
+                        }
+                    )
+                    top_number = int(payload["top_numbers"][0]) if payload.get("top_numbers") else 0
+                    predicted_sector = number_to_sector(top_number, sector_count=sector_count)
+                    payload["predicted_sector"] = int(predicted_sector)
+                    action_event = action_manager.simulate_selection(sector_coords, predicted_sector)
+
+                payload["action_executed"] = action_event.executed
+                payload["action_reason"] = action_event.reason
+                payload["execution_weight"] = int(load_balancer.weight)
+                payload["inference_mode"] = self._settings.inference_mode
                 self.emit("metrics", payload)
 
                 if self._settings.voice and payload["should_bet"] and payload["top_numbers"]:
@@ -179,3 +231,29 @@ class SessionController:
         out.mkdir(exist_ok=True)
         with (out / "desktop_session.log").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), **payload}, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _resolve_sector_coordinates(
+        config_data: dict,
+        wheel_center: tuple[int, int] | None,
+        wheel_radius: int | None,
+        sector_count: int,
+    ) -> list[tuple[int, int]]:
+        configured = config_data.get("target_sector_coords")
+        if isinstance(configured, list) and len(configured) >= sector_count:
+            points: list[tuple[int, int]] = []
+            for item in configured[:sector_count]:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    points.append((int(item[0]), int(item[1])))
+            if len(points) == sector_count:
+                return points
+        if wheel_center is None or wheel_radius is None:
+            return [(0, 0) for _ in range(sector_count)]
+        coords: list[tuple[int, int]] = []
+        r = int(wheel_radius * 0.72)
+        for i in range(sector_count):
+            ang = 2 * math.pi * i / sector_count
+            x = int(wheel_center[0] + r * math.cos(ang))
+            y = int(wheel_center[1] + r * math.sin(ang))
+            coords.append((x, y))
+        return coords
