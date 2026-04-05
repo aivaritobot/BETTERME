@@ -1,0 +1,1 @@
+"""BETTERME desktop application package."""

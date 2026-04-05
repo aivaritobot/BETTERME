@@ -1,4 +1,4 @@
 #!/bin/bash
-# Doble clic en este archivo desde el Finder para abrir BETTERME sin terminal.
+# Doble clic en este archivo desde Finder para abrir BETTERME Desktop.
 cd "$(dirname "$0")"
-python3 launcher.py
+python3 -m app.main

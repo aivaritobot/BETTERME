@@ -1,0 +1,4 @@
+streamlit
+telebot==0.0.5
+optuna==4.0.0
+matplotlib==3.9.2
