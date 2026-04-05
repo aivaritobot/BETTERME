@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BetterMe
+Comment=BETTERME Desktop - Research / Demo / Audit
+Exec=python3 -m app.main
+Path=.
+Icon=clover
+Terminal=false
+Categories=Utility;
