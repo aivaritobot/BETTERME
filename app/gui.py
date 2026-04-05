@@ -19,7 +19,20 @@ class BetterMeDesktopApp:
         self._icon_ref = apply_window_icon(self.root)
 
         self.settings = SettingsManager(Path("app_state.json"))
-        self.root.geometry(self.settings.ui.geometry)
+        # Forzar redimensionable y tamaño mínimo visible, descartar geometría rota
+        self.root.resizable(True, True)
+        self.root.minsize(1000, 640)
+        geom = self.settings.ui.geometry or ""
+        try:
+            size_part = geom.split("+", 1)[0]
+            w_str, h_str = size_part.split("x")
+            if int(w_str) < 1000 or int(h_str) < 640:
+                geom = "1240x780+80+80"
+                self.settings.ui.geometry = geom
+                self.settings.save()
+        except Exception:
+            geom = "1240x780+80+80"
+        self.root.geometry(geom)
 
         self._build_styles()
         self._build_ui()
