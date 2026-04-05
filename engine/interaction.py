@@ -22,7 +22,8 @@ class TargetActionEvent:
 class TargetActionManager:
     """Simulación de selección de usuario con curva Bézier + jitter antropomórfico."""
 
-    def __init__(self, enabled: bool = False, jitter_px: tuple[int, int] = (2, 3), click_delay_ms: int = 14):
+    def __init__(self, enabled: bool = False, jitter_px: tuple[int, int] = (1, 3), click_delay_ms: int = 14, micro_delay_ms: tuple[int, int] = (1, 9)):
+        self.micro_delay_ms = micro_delay_ms
         self.enabled = enabled
         self.jitter_px = jitter_px
         self.click_delay_ms = click_delay_ms
@@ -57,7 +58,8 @@ class TargetActionManager:
             jx = x + random.randint(-jitter, jitter)
             jy = y + random.randint(-jitter, jitter)
             pyautogui.moveTo(jx, jy, duration=0)
-            time.sleep(0.001)
+            micro = random.randint(self.micro_delay_ms[0], self.micro_delay_ms[1]) / 1000.0
+            time.sleep(micro)
         time.sleep(self.click_delay_ms / 1000.0)
         pyautogui.click()
         return TargetActionEvent(sector_index=sector_index, target=target, executed=True, reason="ok")

@@ -9,9 +9,10 @@ from typing import Callable
 
 from app.error_handler import to_user_error
 from app.models import AppStatus, CaptureROI, RuntimeSettings
-from engine.dual_path import ExecutionLoadBalancer, FastPixelTracker, number_to_sector
+from engine.dual_path import ExecutionLoadBalancer, FastPixelTracker
 from engine.interaction import TargetActionManager
 from engine.physics import AdvancedPhysicsEngine
+from engine.orchestrator import UnifiedInferenceOrchestrator
 from engine.vision import RouletteVision
 from ui.overlay import announce_text
 
@@ -110,7 +111,12 @@ class SessionController:
             load_balancer = ExecutionLoadBalancer(weight=int(self._settings.execution_weight))
             action_manager = TargetActionManager(
                 enabled=bool(config_data.get("enable_target_action", False)),
-                jitter_px=(2, 3),
+                jitter_px=(1, 3),
+            )
+            orchestrator = UnifiedInferenceOrchestrator(
+                physics=physics,
+                light_predictor=reactive_tracker,
+                interaction=action_manager,
             )
 
             self.status = AppStatus.CAPTURING
@@ -135,56 +141,15 @@ class SessionController:
 
                 sector_count = max(1, int(config_data.get("sector_count", 8)))
                 sector_coords = self._resolve_sector_coordinates(config_data, state.wheel_center, state.wheel_radius, sector_count)
-                payload: dict[str, object] = {}
-
-                if self._settings.inference_mode == "reactive" and reactive_tracker is not None:
-                    fast_pred = reactive_tracker.process(state, iterations=load_balancer.analysis_iterations())
-                    if fast_pred is None:
-                        continue
-                    payload = {
-                        "mode": "reactive",
-                        "confidence": float(fast_pred.confidence),
-                        "entropy_bits": 0.0,
-                        "edge": 0.0,
-                        "top_numbers": [int(fast_pred.sector_index)],
-                        "bet_amount": 0.0,
-                        "expected_profit_1h": 0.0,
-                        "should_bet": False,
-                        "predicted_sector": int(fast_pred.sector_index),
-                        "latency_ms": float(fast_pred.latency_ms),
-                    }
-                    action_event = action_manager.simulate_selection(sector_coords, fast_pred.sector_index)
-                else:
-                    payload["mode"] = "analytic"
-                    payload["latency_ms"] = 0.0
-                    physics.observe(
-                        timestamp=state.timestamp,
-                        ball_angle=state.ball_angle,
-                        rotor_angle=state.rotor_angle,
-                        det_confidence=state.det_confidence,
-                        track_stability=state.track_stability,
-                        phase=state.phase,
-                        angular_kappa=state.angular_kappa,
-                    )
-                    pred = physics.predict_distribution_37(bankroll=self._settings.bankroll)
-                    payload.update(
-                        {
-                            "confidence": float(pred.get("confidence", 0.0)),
-                            "entropy_bits": float(pred.get("entropy_bits", 0.0)),
-                            "edge": float(pred.get("edge", 0.0)),
-                            "top_numbers": pred.get("top_numbers", []),
-                            "bet_amount": float(pred.get("bet_amount", 0.0)),
-                            "expected_profit_1h": float(pred.get("expected_profit_1h", 0.0)),
-                            "should_bet": bool(pred.get("should_bet", False)),
-                        }
-                    )
-                    top_number = int(payload["top_numbers"][0]) if payload.get("top_numbers") else 0
-                    predicted_sector = number_to_sector(top_number, sector_count=sector_count)
-                    payload["predicted_sector"] = int(predicted_sector)
-                    action_event = action_manager.simulate_selection(sector_coords, predicted_sector)
-
-                payload["action_executed"] = action_event.executed
-                payload["action_reason"] = action_event.reason
+                payload = orchestrator.infer(
+                    state=state,
+                    inference_mode=self._settings.inference_mode,
+                    sector_count=sector_count,
+                    sector_coords=sector_coords,
+                    bankroll=self._settings.bankroll,
+                )
+                if payload is None:
+                    continue
                 payload["execution_weight"] = int(load_balancer.weight)
                 payload["inference_mode"] = self._settings.inference_mode
                 self.emit("metrics", payload)
