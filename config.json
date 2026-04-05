@@ -1,5 +1,12 @@
 {
   "legal_disclaimer": "EXPERIMENTAL. Solo investigación. Ilegal en la mayoría de casinos. Riesgo total de pérdida.",
+  "low_latency_mode": true,
+  "roi_coordinates": {"x": 100, "y": 100, "width": 600, "height": 600},
+  "pixel_threshold": 240,
+  "network_drift_offset": 1.5,
+  "human_jitter_px": 3,
+  "bezier_steps": 15,
+  "safety_cycle_count": 3,
   "wheel_mode": "European",
   "yolo_model": "yolov11n",
   "telegram_token": "",
