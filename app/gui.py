@@ -6,6 +6,7 @@ from tkinter import messagebox, ttk
 
 from app.capture_overlay import CaptureOverlay
 from app.config_store import SettingsManager
+from app.logo import apply_window_icon
 from app.models import AppStatus, CaptureROI, RuntimeSettings
 from app.session import SessionController
 
@@ -15,6 +16,7 @@ class BetterMeDesktopApp:
         self.root = tk.Tk()
         self.root.title("BETTERME Desktop · Research / Demo / Audit")
         self.root.configure(bg="#0d1222")
+        self._icon_ref = apply_window_icon(self.root)
 
         self.settings = SettingsManager(Path("app_state.json"))
         self.root.geometry(self.settings.ui.geometry)
