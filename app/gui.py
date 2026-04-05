@@ -82,6 +82,28 @@ class BetterMeDesktopApp:
         self.voice_var = tk.BooleanVar(value=self.settings.runtime.voice)
         ttk.Checkbutton(left, text="Voz", variable=self.voice_var, command=self._save_runtime).pack(anchor="w", pady=2)
 
+        mode_row = ttk.Frame(left, style="Card.TFrame")
+        mode_row.pack(fill="x", pady=4)
+        ttk.Label(mode_row, text="Inferencia", style="Text.TLabel").pack(side="left")
+        self.inference_mode_var = tk.StringVar(value=self.settings.runtime.inference_mode)
+        inf = ttk.Combobox(
+            mode_row,
+            textvariable=self.inference_mode_var,
+            state="readonly",
+            values=["analytic", "reactive"],
+            width=12,
+        )
+        inf.pack(side="left", padx=10)
+        inf.bind("<<ComboboxSelected>>", lambda _e: self._save_runtime())
+
+        weight_row = ttk.Frame(left, style="Card.TFrame")
+        weight_row.pack(fill="x", pady=4)
+        ttk.Label(weight_row, text="Peso sesión", style="Text.TLabel").pack(side="left")
+        self.execution_weight_var = tk.StringVar(value=str(self.settings.runtime.execution_weight))
+        w = ttk.Combobox(weight_row, textvariable=self.execution_weight_var, state="readonly", values=["3", "5", "10", "50", "100"], width=8)
+        w.pack(side="left", padx=10)
+        w.bind("<<ComboboxSelected>>", lambda _e: self._save_runtime())
+
         self.mode_var = tk.StringVar(value="Research / Demo / Audit")
         ttk.Label(left, text="Modo activo", style="Text.TLabel").pack(anchor="w", pady=(8, 0))
         ttk.Label(left, textvariable=self.mode_var, style="Text.TLabel").pack(anchor="w")
@@ -196,6 +218,8 @@ class BetterMeDesktopApp:
             source=self.source_var.get(),
             bankroll=bankroll,
             voice=bool(self.voice_var.get()),
+            inference_mode=str(self.inference_mode_var.get() or "analytic"),
+            execution_weight=int(self.execution_weight_var.get() or 10),
         )
         self.session.update_settings(self.settings.runtime)
         self.settings.save()

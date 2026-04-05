@@ -26,6 +26,8 @@ class RuntimeSettings:
     source: str = "screen"
     bankroll: float = 100.0
     voice: bool = False
+    inference_mode: str = "analytic"
+    execution_weight: int = 10
 
 
 @dataclass

@@ -49,6 +49,8 @@ class SettingsManager:
             source=str(run.get("source", self.runtime.source)),
             bankroll=float(run.get("bankroll", self.runtime.bankroll)),
             voice=bool(run.get("voice", self.runtime.voice)),
+            inference_mode=str(run.get("inference_mode", self.runtime.inference_mode)),
+            execution_weight=int(run.get("execution_weight", self.runtime.execution_weight)),
         )
         self.last_mode = str(raw.get("last_mode", self.last_mode))
 
