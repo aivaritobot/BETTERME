@@ -21,27 +21,49 @@ class CaptureOverlay:
         self.window = tk.Toplevel(root)
         self.window.title("BETTERME · Área de captura")
         self.window.attributes("-topmost", True)
+        self.window.attributes("-alpha", 0.35)
         self.window.geometry(f"{initial_roi.width}x{initial_roi.height}+{initial_roi.left}+{initial_roi.top}")
         self.window.minsize(240, 240)
         self.window.configure(bg="#18b38f")
 
-        frame = tk.Frame(self.window, bg="#101425", bd=2, relief="ridge")
-        frame.pack(fill="both", expand=True, padx=4, pady=4)
+        frame = tk.Frame(self.window, bg="#18b38f", bd=0, highlightthickness=4, highlightbackground="#18ffc0")
+        frame.pack(fill="both", expand=True, padx=0, pady=0)
 
-        tk.Label(
-            frame,
-            text="Área de captura",
+        # HUD de predicciones (arriba del overlay) - siempre visible sobre el objetivo
+        hud = tk.Frame(frame, bg="#0a0f1f")
+        hud.pack(side="top", fill="x")
+        self.hud_title = tk.Label(
+            hud,
+            text="BETTERME · HUD",
+            font=("Segoe UI", 10, "bold"),
+            bg="#0a0f1f",
+            fg="#18ffc0",
+        )
+        self.hud_title.pack(anchor="w", padx=10, pady=(6, 0))
+        self.hud_signal = tk.Label(
+            hud,
+            text="Señal: —    Confianza: —",
             font=("Segoe UI", 11, "bold"),
-            bg="#101425",
-            fg="#b3efd9",
-        ).pack(anchor="nw", padx=10, pady=(8, 2))
-        tk.Label(
-            frame,
-            text="Mueve o redimensiona esta ventana.",
-            font=("Segoe UI", 9),
-            bg="#101425",
+            bg="#0a0f1f",
+            fg="#ffffff",
+        )
+        self.hud_signal.pack(anchor="w", padx=10)
+        self.hud_top = tk.Label(
+            hud,
+            text="Top: —",
+            font=("Segoe UI", 14, "bold"),
+            bg="#0a0f1f",
+            fg="#ffd166",
+        )
+        self.hud_top.pack(anchor="w", padx=10, pady=(0, 6))
+        self.hud_status = tk.Label(
+            hud,
+            text="Mueve/redimensiona · pulsa Start en el panel",
+            font=("Segoe UI", 8),
+            bg="#0a0f1f",
             fg="#7f92be",
-        ).pack(anchor="nw", padx=10)
+        )
+        self.hud_status.pack(anchor="w", padx=10, pady=(0, 4))
 
         controls = tk.Frame(frame, bg="#101425")
         controls.pack(side="bottom", fill="x", padx=10, pady=8)
@@ -106,6 +128,20 @@ class CaptureOverlay:
             width=max(80, self.window.winfo_width()),
             height=max(80, self.window.winfo_height()),
         )
+
+    def update_prediction(self, signal: str = "—", confidence: str = "—", top: str = "—") -> None:
+        """Actualiza el HUD con la última predicción del motor."""
+        try:
+            self.hud_signal.configure(text=f"Señal: {signal}    Confianza: {confidence}")
+            self.hud_top.configure(text=f"Top: {top}")
+        except tk.TclError:
+            pass
+
+    def set_hud_status(self, message: str) -> None:
+        try:
+            self.hud_status.configure(text=message)
+        except tk.TclError:
+            pass
 
     def lift(self) -> None:
         self.window.lift()

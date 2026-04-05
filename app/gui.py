@@ -194,10 +194,16 @@ class BetterMeDesktopApp:
             self._sync_buttons(payload.get("status", ""))
         elif event == "metrics":
             should = bool(payload.get("should_bet", False))
-            self.signal_var.set("APOSTAR" if should else "ESPERAR")
-            self.conf_var.set(f"{float(payload.get('confidence', 0.0)):.1%}")
+            signal_text = "APOSTAR" if should else "ESPERAR"
+            conf_text = f"{float(payload.get('confidence', 0.0)):.1%}"
             top = payload.get("top_numbers", [])
-            self.top_var.set(" ".join(str(x) for x in top[:5]) if top else "—")
+            top_text = " ".join(str(x) for x in top[:5]) if top else "—"
+            self.signal_var.set(signal_text)
+            self.conf_var.set(conf_text)
+            self.top_var.set(top_text)
+            # Replicar en el HUD del overlay
+            if getattr(self, "overlay", None) is not None:
+                self.overlay.update_prediction(signal_text, conf_text, top_text)
         elif event == "health":
             self.health_text.delete("1.0", "end")
             for item in payload.get("checks", []):
