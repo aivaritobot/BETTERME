@@ -208,6 +208,7 @@ class RouletteVision:
         self._camera_signature = None
         self._camera_change_cooldown = 0
         self._ball_reid_buffer: deque[tuple[int, int]] = deque(maxlen=20)
+        self._capture_roi: tuple[int, int, int, int] | None = None
 
     @staticmethod
     def _extract_token(raw_text: str) -> str | None:
@@ -603,6 +604,20 @@ class RouletteVision:
         stability = np.clip(conf_mean * (1.0 - conf_std), 0.0, 1.0)
         return float(stability)
 
+    def set_capture_roi(self, left: int, top: int, width: int, height: int) -> None:
+        self._capture_roi = (int(left), int(top), int(width), int(height))
+
+    def _apply_capture_roi(self, frame):
+        if frame is None or self._capture_roi is None:
+            return frame
+        h, w = frame.shape[:2]
+        left, top, width, height = self._capture_roi
+        x0 = max(0, min(w - 1, left))
+        y0 = max(0, min(h - 1, top))
+        x1 = max(x0 + 2, min(w, left + max(2, width)))
+        y1 = max(y0 + 2, min(h, top + max(2, height)))
+        return frame[y0:y1, x0:x1]
+
     def _von_mises_kappa(self) -> float:
         if len(self._omega_hist) < 5:
             return 0.0
@@ -635,6 +650,8 @@ class RouletteVision:
             if not ok:
                 return None
             ts = now
+
+        frame = self._apply_capture_roi(frame)
 
         # === MAX LEVEL ONLINE GOD MODE - AÑADIDO ===
         frame = self._enhance_frame(frame)
